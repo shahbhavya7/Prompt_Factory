@@ -1,0 +1,20 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sace
+      POSTGRES_PASSWORD: sace
+      POSTGRES_DB: sace_chat
+    ports:
+      - "5433:5432"
+    volumes:
+      - sace_chat_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sace -d sace_chat"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  sace_chat_pgdata:
