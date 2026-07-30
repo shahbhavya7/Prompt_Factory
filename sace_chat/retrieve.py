@@ -19,7 +19,7 @@ said after "would you like me to repeat the number?" — the message alone is
 genuinely ambiguous, and the rule texts are written to match the pair.
 """
 
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass, field as dc_field, replace
 
 from sqlalchemy import text
 
@@ -265,6 +265,94 @@ def _fetch_general(conn, qvec, table: str, k: int = 2) -> list[Chunk]:
     return out
 
 
+def _fetch_full_pool_db(conn, qvec, table: str, k: int = 1) -> list[Chunk]:
+    """Last-resort fallback: nearest rule in the WHOLE table, intent-tagged or
+    not, by pure distance. Used only when neither the intent path nor the
+    general pool cleared GENERAL_MIN_SIMILARITY — see `retrieve`'s fallback
+    stage."""
+    rows = conn.execute(
+        text(
+            f"""
+            SELECT {_SELECT_COLS}, embedding <=> :qvec AS distance
+            FROM {table}
+            ORDER BY distance
+            LIMIT :k
+            """
+        ),
+        {"qvec": str(list(qvec)), "k": k},
+    ).fetchall()
+    out = []
+    for row in rows:
+        chunk = _row_to_chunk(row)
+        chunk.tags["distance"] = float(row.distance)
+        out.append(chunk)
+    return out
+
+
+def _parse_embedding(raw) -> list[float]:
+    """pgvector's `vector` column comes back from a raw SQL fetch as its
+    string literal form, e.g. "[0,0.1,-0.2,...]" — not a list or ndarray."""
+    if isinstance(raw, str):
+        return [float(x) for x in raw.strip("[]").split(",")]
+    if hasattr(raw, "tolist"):
+        return raw.tolist()
+    return list(raw)
+
+
+class RulePoolCache:
+    """In-memory mirror of the `chunks` table, so the live path can search it
+    with plain Python cosine instead of paying a Postgres round-trip on every
+    turn.
+
+    Safe to cache because the pool only changes BETWEEN calls: the learning
+    loop (consolidator.run_learning_loop) never runs while a call is live, only
+    after one ends (docs/ARCHITECTURE.md — Lane B never runs on the hot path).
+    A cache refreshed at worker boot and again after each learning run is
+    therefore never stale during a call. At the pool sizes this system runs at
+    (tens to low hundreds of rows), a full Python scan costs microseconds —
+    the thing being cut is network latency, not compute.
+    """
+
+    def __init__(self):
+        self._rows: list[tuple[Chunk, list[float]]] = []
+
+    @property
+    def loaded(self) -> bool:
+        return bool(self._rows)
+
+    def refresh(self, conn, table: str = "chunks") -> int:
+        rows = conn.execute(text(f"SELECT {_SELECT_COLS}, embedding FROM {table}")).fetchall()
+        self._rows = [(_row_to_chunk(row), _parse_embedding(row.embedding)) for row in rows]
+        return len(self._rows)
+
+    def _scored(self, qvec, predicate=None) -> list[tuple[float, Chunk]]:
+        out = []
+        for chunk, vec in self._rows:
+            if predicate is not None and not predicate(chunk):
+                continue
+            out.append((1 - _cosine(qvec, vec), chunk))
+        out.sort(key=lambda dc: dc[0])
+        return out
+
+    def fetch_by_intent(self, intent: str, qvec) -> Chunk | None:
+        candidates = self._scored(qvec, predicate=lambda c: c.intent == intent)
+        if not candidates:
+            return None
+        # Same tie-break as _PRIORITY_RANK: critical hard-outranks, everything
+        # else is pure distance.
+        candidates.sort(key=lambda dc: (0 if dc[1].priority == "critical" else 1, dc[0]))
+        distance, chunk = candidates[0]
+        return replace(chunk, tags={"distance": distance})
+
+    def fetch_general(self, qvec, k: int = 2) -> list[Chunk]:
+        candidates = self._scored(qvec, predicate=lambda c: c.intent is None)
+        return [replace(c, tags={"distance": d}) for d, c in candidates[:k]]
+
+    def fetch_full_pool(self, qvec, k: int = 1) -> list[Chunk]:
+        candidates = self._scored(qvec)
+        return [replace(c, tags={"distance": d}) for d, c in candidates[:k]]
+
+
 def retrieve(
     conn,
     state: CallState,
@@ -274,14 +362,36 @@ def retrieve(
     router: IntentRouter | None = None,
     table: str = "chunks",
     precedence=None,
+    pool_cache: "RulePoolCache | None" = None,
 ) -> Retrieval:
     """`precedence` is an optional (intent, message) -> (intent, opt_out) hook,
     applied to the detected label before the rule is fetched — policy lives in
     manager.resolve_precedence and is injected here rather than duplicated, so
     a flip like dnc -> abuse changes which rule governs without a second query.
+
+    `pool_cache`, when given and warmed, replaces the three Postgres queries
+    below with in-memory Python cosine search over the same rows — `conn` may
+    then be None. Falls back to `conn` transparently otherwise, so tests and
+    the chat app that never warm a cache are unaffected.
     """
     router = router or IntentRouter(embedder)
     router.warm()
+    use_cache = pool_cache is not None and pool_cache.loaded
+
+    def by_intent(label: str):
+        if use_cache:
+            return pool_cache.fetch_by_intent(label, pool_vec)
+        return _fetch_by_intent(conn, label, pool_vec, table)
+
+    def general_pool(k: int = 2):
+        if use_cache:
+            return pool_cache.fetch_general(pool_vec, k=k)
+        return _fetch_general(conn, pool_vec, table, k=k)
+
+    def full_pool(k: int = 1):
+        if use_cache:
+            return pool_cache.fetch_full_pool(pool_vec, k=k)
+        return _fetch_full_pool_db(conn, pool_vec, table, k=k)
 
     pending = pending_question(history)
     query_text = f"{message}   [pending: {pending}]" if pending else message
@@ -312,7 +422,7 @@ def retrieve(
             result.intent = effective
 
     if intent is not None:
-        chunk = _fetch_by_intent(conn, intent, pool_vec, table)
+        chunk = by_intent(intent)
         if chunk is not None:
             result.governing = RetrievedRule(chunk, "governing", 1 - chunk.tags["distance"])
             return result
@@ -321,23 +431,47 @@ def retrieve(
         result.notes.append(f"intent {intent!r} matched no rule; fell through to the general pool")
         result.intent = None
 
-    general = _fetch_general(conn, pool_vec, table, k=2)
+    general = general_pool(k=2)
     if general:
         best_similarity = 1 - general[0].tags["distance"]
-        if best_similarity < GENERAL_MIN_SIMILARITY:
+        if best_similarity >= GENERAL_MIN_SIMILARITY:
+            result.governing = RetrievedRule(general[0], "governing", best_similarity)
+            if not general[0].exclusive and len(general) > 1:
+                result.reference = [
+                    RetrievedRule(general[1], "reference", 1 - general[1].tags["distance"])
+                ]
+            elif general[0].exclusive:
+                result.notes.append(f"{general[0].id} is exclusive; reference suppressed")
+            return result
+        result.notes.append(
+            f"general-pool best match {general[0].id} below relevance threshold "
+            f"({best_similarity:.3f} < {GENERAL_MIN_SIMILARITY:.3f}); trying full-pool fallback"
+        )
+    else:
+        result.notes.append("general pool empty; trying full-pool fallback")
+
+    # FALLBACK: neither an intent-routed rule nor the general pool cleared
+    # threshold. Search the WHOLE pool, intent-tagged rules included, by pure
+    # cue-embedding distance. This catches a caller phrasing that is close to
+    # an intent-routed rule's cue without being close enough to any short
+    # intent exemplar to classify — the exemplar set and the rule pool are two
+    # different embedding comparisons, and they can disagree. The same
+    # relevance floor applies, so an unrelated nearest neighbor still cannot
+    # govern the turn; this only widens the search, it never lowers the bar.
+    fallback = full_pool(k=1)
+    if fallback:
+        best_similarity = 1 - fallback[0].tags["distance"]
+        if best_similarity >= GENERAL_MIN_SIMILARITY:
+            result.governing = RetrievedRule(fallback[0], "governing", best_similarity)
             result.notes.append(
-                f"general-pool best match {general[0].id} below relevance threshold "
-                f"({best_similarity:.3f} < {GENERAL_MIN_SIMILARITY:.3f}); no rule retrieved"
+                f"full-pool fallback matched {fallback[0].id} ({best_similarity:.3f}) — "
+                "caller's wording didn't match the intent exemplars but was close to this rule's cue"
             )
             return result
-
-        result.governing = RetrievedRule(general[0], "governing", best_similarity)
-        if not general[0].exclusive and len(general) > 1:
-            result.reference = [
-                RetrievedRule(general[1], "reference", 1 - general[1].tags["distance"])
-            ]
-        elif general[0].exclusive:
-            result.notes.append(f"{general[0].id} is exclusive; reference suppressed")
+        result.notes.append(
+            f"full-pool fallback best match {fallback[0].id} still below threshold "
+            f"({best_similarity:.3f} < {GENERAL_MIN_SIMILARITY:.3f}); no rule retrieved"
+        )
     else:
         result.notes.append("memory is empty — no rule retrieved")
 

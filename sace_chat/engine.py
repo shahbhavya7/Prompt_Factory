@@ -19,7 +19,7 @@ import time
 from sace_chat.assemble import build_turn_prompt
 from sace_chat.db import engine as db_engine
 from sace_chat.llm import build_messages, parse_json_object, render_messages
-from sace_chat.retrieve import IntentRouter, retrieve
+from sace_chat.retrieve import IntentRouter, RulePoolCache, retrieve
 from sace_chat.tokens import est_tokens
 
 # Pinned monolith baseline for the savings comparison (data/base_prompt_coverage.txt).
@@ -248,8 +248,27 @@ class Engine:
         self.monolith_tokens = est_tokens(monolith_text) if monolith_text else MONOLITH_TOKENS
         self.table = table
         self.router = IntentRouter(embedder)
+        # Loaded lazily by warm_pool(); until then _retrieve falls back to a
+        # live Postgres query per turn, so behaviour is identical either way.
+        self.pool_cache = RulePoolCache()
+
+    def warm_pool(self) -> int:
+        """Load the whole rule pool into memory so live turns search it with
+        Python cosine instead of a Postgres round-trip every turn. Call once
+        at boot, and again after the learning loop inserts new rules — the
+        pool otherwise only changes between calls (see docs/ARCHITECTURE.md),
+        so a cache refreshed at those two points is never stale mid-call.
+        """
+        with db_engine.connect() as conn:
+            return self.pool_cache.refresh(conn, self.table)
 
     def _retrieve(self, state, message, history):
+        if self.pool_cache.loaded:
+            return retrieve(
+                None, state, message, self.embedder,
+                history=history, router=self.router, table=self.table,
+                precedence=self.manager.resolve_precedence, pool_cache=self.pool_cache,
+            )
         with db_engine.connect() as conn:
             return retrieve(
                 conn, state, message, self.embedder,

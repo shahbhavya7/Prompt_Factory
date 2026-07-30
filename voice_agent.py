@@ -362,6 +362,13 @@ class SaceVoiceAgent(Agent):
                 print(f"        {r.candidate.text[:110]}")
         except Exception as exc:
             print(f"[learn] failed: {type(exc).__name__}: {exc}")
+        else:
+            # Refresh the pool cache so any rule just inserted is reachable on
+            # this worker's NEXT call — the whole reason it's safe to cache is
+            # that this is the only point (besides boot) where the pool can
+            # have changed.
+            new_size = self.engine.warm_pool()
+            print(f"[learn] pool cache refreshed ({new_size} rows)")
 
         record_call_transcript(
             session_id=self.session_id, source="voice", transcript=transcript,
@@ -385,7 +392,10 @@ def build_engine() -> Engine:
     )
     # Exemplars embedded once here, at startup, so no turn pays for them.
     engine.router.warm()
-    print(f"[boot] engine ready · {len(RULES)} seed rules · "
+    # Whole pool loaded into memory once, here, so no turn pays a Postgres
+    # round-trip for retrieval either.
+    pool_size = engine.warm_pool()
+    print(f"[boot] engine ready · {len(RULES)} seed rules · {pool_size} rows in pool cache · "
           f"hot-path embedder shares KB model: {engine.router.shares_kb_embedder}")
     return engine
 

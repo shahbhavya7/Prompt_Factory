@@ -33,6 +33,26 @@ DUPLICATE_THRESHOLD = 0.85
 SAME_TOPIC_THRESHOLD = 0.6
 
 _NUMBER_RE = re.compile(r"\b\d+(?:[:.]\d+)?\b")
+_WS_RE = re.compile(r"\s+")
+
+# GATE 0 predicate: a rule with no concrete line or action gives the model
+# nothing to actually say or do, so it improvises under it — precisely the
+# failure mode the OTHER three gates cannot see, because they check
+# attestation, novelty and contradiction, never whether the text is
+# executable at all. "When the caller is frustrated, acknowledge their
+# feelings and be more respectful" is grounded, novel, and contradicts
+# nothing, and is still useless: it has no scripted line, so retrieval can
+# surface it as GOVERNING and the model has to invent the actual words.
+_QUOTED_LINE_RE = re.compile(r'"[^"]{6,}"')
+_CONCRETE_MARKER_RE = re.compile(r"\{callback_number\}|\bKEEP\b|\d")
+_VAGUE_ADVICE_RE = re.compile(
+    r"acknowledge (their|the caller'?s?) feelings"
+    r"|in an? (more )?(respectful|empathetic|understanding|calm) (manner|way|tone)"
+    r"|offer to assist\b"
+    r"|be (more )?(patient|calm|understanding|empathetic|respectful)\b"
+    r"|(handle|respond to) (it|this|them) (more )?(sensitively|carefully|gently)",
+    re.IGNORECASE,
+)
 _ASSERT_WORDS = {"is", "are", "does", "do", "can", "will", "must", "always"}
 _DENY_WORDS = {"not", "never", "no", "can't", "cannot", "doesn't", "don't", "won't"}
 
@@ -78,7 +98,14 @@ Rules:
 - "intent" MUST be one of the listed labels, or null. Those labels are the only
   ones the router can recognise, so never invent one; use null when the rule is
   general guidance rather than a handler for one of those situations.
-- "text" is what the agent should DO: "When the caller ..., say ...".
+- "text" is what the agent should DO: "When the caller ..., say ...". It MUST
+  contain either an exact line in quotes for Maya to speak, or a precise,
+  concrete next action (which number to give, which question to ask, what to
+  check) — the same level of concreteness as the existing scripted rules.
+  Never propose generic sentiment-coaching with nothing actually to say or do,
+  e.g. "acknowledge their feelings and respond more respectfully" or "be more
+  patient" — that gives the agent no words and no action, so it has to
+  improvise anyway, which is exactly what these rules exist to prevent.
 - "cue" is what the rule is FOUND BY, and it is what gets embedded. Write it as
   the caller's own words — six to ten short phrasings of the thing they would
   say, comma separated, ending with a brief note on what was pending. Example:
@@ -180,8 +207,32 @@ def _is_grounded(candidate: Candidate, transcript: str) -> bool:
     text directly out of a transcript line it already located, grounding
     here means confirming that line is still verbatim-present in the
     transcript (catches a candidate being fabricated or edited downstream
-    of extraction)."""
-    return bool(candidate.source_line) and candidate.source_line in transcript
+    of extraction).
+
+    Whitespace-normalised as a second attempt: the model sometimes copies a
+    source_line with a collapsed double space or a stray newline it saw in
+    the transcript rendering, which is not a hallucination and shouldn't be
+    rejected as one — it is still a verbatim match once whitespace runs are
+    collapsed on both sides."""
+    if not candidate.source_line:
+        return False
+    if candidate.source_line in transcript:
+        return True
+    normalized_line = _WS_RE.sub(" ", candidate.source_line).strip()
+    normalized_transcript = _WS_RE.sub(" ", transcript)
+    return bool(normalized_line) and normalized_line in normalized_transcript
+
+
+def _is_actionable(candidate: "Candidate") -> bool:
+    """GATE 0 — concreteness. Passes if the text has an actual scripted line
+    or a concrete marker (a number, KEEP, the callback placeholder) to anchor
+    it. Only rejects text that BOTH lacks any of that AND reads as generic
+    sentiment-coaching — a candidate that's merely terse but still concrete
+    ("say her name back once more") is not penalised for having no quotes."""
+    text = candidate.text
+    if _QUOTED_LINE_RE.search(text) or _CONCRETE_MARKER_RE.search(text):
+        return True
+    return not _VAGUE_ADVICE_RE.search(text)
 
 
 def _is_conflict(candidate_text: str, existing_text: str) -> bool:
@@ -246,6 +297,18 @@ def run_learning_loop(transcript: str, embedder, conn, table: str = "chunks", ll
 
     try:
         for candidate in candidates:
+            if not _is_actionable(candidate):
+                needs_review_row = NeedsReviewRow(
+                    id=str(uuid.uuid4()),
+                    candidate_text=candidate.text,
+                    existing_chunk_id=None,
+                    reason="vague",
+                )
+                session.add(needs_review_row)
+                session.commit()
+                results.append(GateResult(candidate, "vague-rejected", "no concrete line or action; reads as generic advice"))
+                continue
+
             if not _is_grounded(candidate, transcript):
                 needs_review_row = NeedsReviewRow(
                     id=str(uuid.uuid4()),

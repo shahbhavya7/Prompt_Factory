@@ -92,6 +92,9 @@ def boot():
     # Embeds the intent exemplars once, here, rather than on the first caller
     # turn where it would show up as latency.
     eng.router.warm()
+    # Same idea for retrieval: load the whole pool once so turns search it in
+    # memory instead of paying a Postgres round-trip each time.
+    eng.warm_pool()
     return eng, embedder, llm
 
 
@@ -126,6 +129,9 @@ with st.sidebar:
                 try:
                     with db_engine.connect() as conn:
                         results = run_learning_loop(transcript, embedder, conn, llm=llm)
+                    # A new rule may have just been inserted — refresh the
+                    # cache so the next call in this session can retrieve it.
+                    engine.warm_pool()
                     st.session_state.learning = {
                         "results": [
                             {
