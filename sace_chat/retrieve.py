@@ -46,6 +46,11 @@ _CONTEXT_CHARS = 90
 # 0.8 and below -> 17 or fewer. A little context is decisive, a lot is harmful.
 MESSAGE_WEIGHT = 0.9
 
+# If the general pool's nearest chunk is below this, it is not actually a
+# retrieved rule; it is just the least-bad neighbor in vector space. Without
+# this gate, "tell me a joke" can land on a phone-number repeat rule.
+GENERAL_MIN_SIMILARITY = 0.30
+
 _SELECT_COLS = "id, title, text, intent, priority, terminal, exclusive, source, learned_kind"
 
 # Priority ranks strictly ABOVE distance — but only inside an intent's own rule
@@ -318,7 +323,15 @@ def retrieve(
 
     general = _fetch_general(conn, pool_vec, table, k=2)
     if general:
-        result.governing = RetrievedRule(general[0], "governing", 1 - general[0].tags["distance"])
+        best_similarity = 1 - general[0].tags["distance"]
+        if best_similarity < GENERAL_MIN_SIMILARITY:
+            result.notes.append(
+                f"general-pool best match {general[0].id} below relevance threshold "
+                f"({best_similarity:.3f} < {GENERAL_MIN_SIMILARITY:.3f}); no rule retrieved"
+            )
+            return result
+
+        result.governing = RetrievedRule(general[0], "governing", best_similarity)
         if not general[0].exclusive and len(general) > 1:
             result.reference = [
                 RetrievedRule(general[1], "reference", 1 - general[1].tags["distance"])

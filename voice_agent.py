@@ -475,7 +475,10 @@ async def entrypoint(ctx: JobContext):
         import re as _re
         quoted = _re.findall(r'"([^"]{40,})"', _substitute_placeholders(opening.text))
         if quoted:
-            await session.say(quoted[0], allow_interruptions=True)
+            opening_text = quoted[0]
+            await session.say(opening_text, allow_interruptions=True)
+            agent.history.append(f"Maya: {opening_text}")
+            agent.state.asked_questions.append(opening_text)
 
 
 async def _close(session: AgentSession):

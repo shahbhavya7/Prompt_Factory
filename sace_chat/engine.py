@@ -28,6 +28,11 @@ MONOLITH_TOKENS = 5782
 # Below this, the reply is not traceable to the governing rule and is regenerated.
 GROUNDING_THRESHOLD = 0.45
 
+NO_RULE_REPLY = (
+    "I'm sorry, I can only help with Medi-Cal coverage status on this call. "
+    "Thanks for your time — take care!"
+)
+
 _QUOTED_RE = re.compile(r'"([^"]{12,})"')
 _WORD_RE = re.compile(r"[a-z0-9']+")
 
@@ -166,6 +171,59 @@ def assert_message_present(prompt_sent: str, user_message: str):
         )
 
 
+def no_rule_decision(user_message: str, retrieval, elapsed_ms: float = 0.0) -> dict:
+    """Deterministic fallback when memory has no relevant chunk.
+
+    This is intentionally polite and terminal: if no rule governs the turn,
+    the agent should not improvise from an unrelated nearest neighbor. The
+    transcript is still kept, so the between-calls learner can add a real rule
+    if this was an important new situation.
+    """
+    messages = build_messages(
+        "NO RELEVANT RULE RETRIEVED. Politely close the call without inventing policy.",
+        user_message,
+    )
+    prompt_sent = render_messages(messages)
+    return {
+        "prompt_sent": prompt_sent,
+        "prompt_sent_tokens": est_tokens(prompt_sent),
+        "llm_messages": messages,
+        "sent_log": [{"prompt_sent": prompt_sent, "messages": messages, "tokens": est_tokens(prompt_sent)}],
+        "llm_calls": 0,
+        "caller_message": user_message,
+        "assembled_prompt": messages[0]["content"],
+        "assembled_prompt_tokens": est_tokens(messages[0]["content"]),
+        "monolith_tokens": MONOLITH_TOKENS,
+        "saved_pct": (1 - est_tokens(messages[0]["content"]) / MONOLITH_TOKENS) * 100,
+        "elapsed_ms": elapsed_ms,
+        "turn_json": {
+            "intent": retrieval.intent or "none",
+            "reply": NO_RULE_REPLY,
+            "call_should_end": True,
+            "extracted_fields": {},
+        },
+        "raw_llm_output": "",
+        "notes": list(retrieval.notes) + ["no relevant rule; used polite terminal fallback"],
+        "outcome": "no-rule",
+        "grounded": False,
+        "spliced": False,
+        "regenerated": False,
+        "governing_cosine": 0.0,
+        "grounding_threshold": GROUNDING_THRESHOLD,
+        "scores": {},
+        "intent": retrieval.intent,
+        "intent_similarity": retrieval.intent_similarity,
+        "intent_ranked": retrieval.intent_ranked,
+        "query_text": retrieval.query_text,
+        "governing": None,
+        "reference": [],
+        "call_should_end": True,
+        "extracted_fields": {},
+        "asked_question": None,
+        "retrieval": retrieval,
+    }
+
+
 def question_key(question: str) -> str:
     """Identity of a question for dedup.
 
@@ -291,6 +349,10 @@ class Engine:
         retrieval = ctx["retrieval"]
         prompt = ctx["system_prompt"]
         notes.extend(ctx["notes"])
+        if retrieval.governing is None:
+            return NO_RULE_REPLY, no_rule_decision(
+                user_message, retrieval, (time.perf_counter() - start) * 1000
+            )
 
         valid, raw = self._decide(
             prompt, user_message, state, notes, sent_log, sent_entry=ctx.get("sent_entry")
@@ -416,6 +478,23 @@ class Engine:
         retrieval = ctx["retrieval"]
         prompt = ctx["system_prompt"]
         notes.extend(ctx["notes"])
+        if retrieval.governing is None:
+            final = no_rule_decision(
+                user_message, retrieval, (time.perf_counter() - start) * 1000
+            )
+            state.intent = retrieval.intent or "none"
+            state.opt_out = state.opt_out or retrieval.opt_out
+            state.ended = True
+            history.append(f"Caller: {user_message}")
+            history.append(f"Maya: {NO_RULE_REPLY}")
+            final["state_snapshot"] = {
+                "intent": state.intent,
+                "opt_out": state.opt_out,
+                "ended": state.ended,
+                "asked_questions": list(state.asked_questions),
+                "collected_fields": dict(state.collected_fields),
+            }
+            return NO_RULE_REPLY, state, final
 
         # 3. One structured decision, reusing the capture made during assembly.
         valid, raw = self._decide(
