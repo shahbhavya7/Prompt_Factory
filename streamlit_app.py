@@ -8,6 +8,7 @@ Run:  streamlit run streamlit_app.py
 """
 
 import os
+import re
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -22,6 +23,7 @@ from sace_chat.engine import MONOLITH_TOKENS, Engine
 from sace_chat.kb import RULES, STABLE_CORE
 from sace_chat.llm import get_llm
 from sace_chat.retrieve import CallState
+from sace_chat.tokens import est_tokens
 
 st.set_page_config(page_title="sace-chat", page_icon="🎧", layout="wide")
 
@@ -153,10 +155,160 @@ with st.sidebar:
 st.markdown("#### sace-chat — memory-only retrieval")
 left, right = st.columns([1.05, 0.95], gap="large")
 
+def prompt_expander_label(turn, turn_number: int) -> str:
+    """Name the expander after the rule that governed the turn.
+
+    The point of the viewer is to show that the chunk retrieved from memory is
+    the chunk that reached the prompt, so the rule id belongs in the label —
+    otherwise the link between the two panels is only visible after expanding.
+    """
+    gov = turn.get("governing")
+    scope = f"{gov['id']} in scope" if gov else "no rule in scope"
+    label = f"View prompt sent · turn {turn_number} · {scope} · {turn['prompt_sent_tokens']:,} tok"
+    if turn["llm_calls"] > 1:
+        label += f" · {turn['llm_calls']} calls"
+    return label
+
+
+# The payload's sections, in the order they are sent. Each marker is anchored to
+# a line start, because the same words also occur mid-sentence inside
+# STABLE_CORE and the turn instruction ("...take any line from the REFERENCE
+# section", "The GOVERNING RULE below is...") and an unanchored search would cut
+# the prompt in the wrong place.
+_PROMPT_SECTIONS = [
+    ("SYSTEM PROMPT — stable core", r"^=== SYSTEM ===", "same every turn", "#8b93a3"),
+    ("MEMORY — governing rule", r"^GOVERNING RULE", "retrieved this turn", "#5ec4ff"),
+    ("MEMORY — reference rule", r"^REFERENCE", "retrieved this turn", "#7d8590"),
+    ("ALREADY ASKED", r"^ALREADY ASKED", "call state", "#8b93a3"),
+    ("RECENT CONVERSATION", r"^RECENT TURNS", "call state", "#ffb454"),
+    ("OUTPUT INSTRUCTION", r"^# THIS TURN", "same every turn", "#8b93a3"),
+    ("CORRECTION — after a rejected attempt", r"^# CORRECTION", "only on a retry", "#ff7b72"),
+    ("CALLER MESSAGE — this turn", r"^=== USER ===", "this turn", "#6ee7b7"),
+]
+_PROMPT_SECTIONS = [
+    (label, re.compile(pat, re.M), kind, colour)
+    for label, pat, kind, colour in _PROMPT_SECTIONS
+]
+
+
+def split_prompt_sent(prompt_sent: str) -> list[dict]:
+    """Slice the captured payload at its section boundaries.
+
+    Pure slicing, never re-assembly: the segments are contiguous cuts of the
+    stored string, so joining them back gives the original byte for byte. The
+    caller asserts exactly that before displaying anything, which is what keeps
+    the sectioned view as trustworthy as the raw one.
+    """
+    hits = []
+    cursor = 0
+    for label, pattern, kind, colour in _PROMPT_SECTIONS:
+        m = pattern.search(prompt_sent, cursor)
+        if m is None:
+            continue  # e.g. no CORRECTION section unless the turn was retried
+        hits.append((label, kind, colour, m.start()))
+        cursor = m.end()
+
+    segments = []
+    for n, (label, kind, colour, start) in enumerate(hits):
+        end = hits[n + 1][3] if n + 1 < len(hits) else len(prompt_sent)
+        segments.append({
+            "label": label, "kind": kind, "colour": colour,
+            "text": prompt_sent[start:end],
+        })
+    if hits and hits[0][3] > 0:  # anything before the first marker is not dropped
+        segments.insert(0, {
+            "label": "(preamble)", "kind": "", "colour": "#8b93a3",
+            "text": prompt_sent[:hits[0][3]],
+        })
+    return segments
+
+
+def render_prompt_sent(turn, key_prefix: str):
+    """The exact payload this turn was sent, verbatim.
+
+    Read out of the turn's own stored capture — never reassembled from the
+    current state, which by now has moved several turns on.
+    """
+    log = turn.get("sent_log") or []
+    entry = log[-1] if log else None
+    if entry is None:
+        st.warning("No captured payload for this turn.")
+        return
+
+    if len(log) > 1:
+        # A regeneration means two payloads went out; both stay inspectable.
+        which = st.radio(
+            "LLM call",
+            options=list(range(len(log))),
+            format_func=lambda i: (
+                f"call {i + 1}" + (" (produced the reply)" if i == len(log) - 1 else " (rejected)")
+            ),
+            index=len(log) - 1,
+            horizontal=True,
+            key=f"{key_prefix}_call",
+        )
+        entry = log[which]
+
+    caller_msg = turn.get("caller_message", "")
+    present = bool(caller_msg) and caller_msg in entry["prompt_sent"]
+    st.caption(
+        f"{len(entry['prompt_sent']):,} chars · {entry['tokens']:,} tokens · "
+        f"{len(entry['messages'])} messages, exactly as sent"
+    )
+    if present:
+        st.caption(f"✅ contains this turn's caller message verbatim: `{caller_msg[:70]}`")
+    else:
+        st.error(
+            "This turn's caller message is NOT present verbatim in the captured payload — "
+            "the viewer is showing the wrong turn."
+        )
+
+    view = st.radio(
+        "view",
+        options=["In send order, by section", "One raw block"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key=f"{key_prefix}_view",
+    )
+
+    if view == "One raw block":
+        st.code(entry["prompt_sent"], language="markdown")
+        return
+
+    segments = split_prompt_sent(entry["prompt_sent"])
+    if "".join(s["text"] for s in segments) != entry["prompt_sent"]:
+        st.error(
+            "Section split did not reassemble to the captured payload — showing the raw "
+            "block instead, which is always authoritative."
+        )
+        st.code(entry["prompt_sent"], language="markdown")
+        return
+
+    st.caption(
+        f"{len(segments)} sections, top to bottom = the order the model reads them. "
+        "Concatenated they are byte-identical to the payload above."
+    )
+    for n, seg in enumerate(segments, start=1):
+        st.markdown(
+            f"<div class='meta' style='margin-top:10px'>"
+            f"<span style='color:{seg['colour']};font-weight:700'>{n} · {seg['label']}</span>"
+            f"<span class='badge' style='color:{seg['colour']};background:{seg['colour']}22;"
+            f"border:1px solid {seg['colour']}44'>{seg['kind']}</span>"
+            f" &nbsp;{len(seg['text']):,} chars · {est_tokens(seg['text']):,} tok</div>",
+            unsafe_allow_html=True,
+        )
+        st.code(seg["text"], language="markdown")
+
+
 with left:
-    for msg in st.session_state.messages:
+    for i, msg in enumerate(st.session_state.messages):
         with st.chat_message("user" if msg["role"] == "caller" else "assistant"):
             st.markdown(msg["text"])
+            idx = msg.get("turn")
+            if idx is not None and idx < len(st.session_state.turns):
+                t = st.session_state.turns[idx]
+                with st.expander(prompt_expander_label(t, idx + 1)):
+                    render_prompt_sent(t, key_prefix=f"msg{i}")
 
     if prompt := st.chat_input("Type the caller's turn…", disabled=st.session_state.state.ended):
         st.session_state.messages.append({"role": "caller", "text": prompt})
@@ -171,9 +323,11 @@ with left:
                 except Exception as exc:
                     reply, debug = f"[engine error: {type(exc).__name__}: {exc}]", None
             st.markdown(reply)
-        st.session_state.messages.append({"role": "maya", "text": reply})
+        turn_index = None
         if debug:
+            turn_index = len(st.session_state.turns)
             st.session_state.turns.append(debug)
+        st.session_state.messages.append({"role": "maya", "text": reply, "turn": turn_index})
         st.rerun()
 
 
@@ -249,6 +403,7 @@ with right:
             unsafe_allow_html=True,
         )
 
+        st.markdown("**Retrieved from memory**")
         if turn["intent"]:
             st.caption(
                 f"intent **{turn['intent']}** matched at cos **{turn['intent_similarity']:.3f}** — "
@@ -283,9 +438,16 @@ with right:
         for n in turn.get("notes") or []:
             st.caption(f"⚠︎ {n}")
 
-        with st.expander("View assembled prompt"):
-            st.caption(f"{len(turn['assembled_prompt']):,} chars — exactly what was sent")
-            st.code(turn["assembled_prompt"], language="markdown")
+        with st.expander(prompt_expander_label(turn, len(st.session_state.turns))):
+            st.caption(
+                "Search this for the rule id above to see the retrieved chunk in place, "
+                "under `GOVERNING RULE`."
+            )
+            render_prompt_sent(turn, key_prefix="panel")
+            st.caption(
+                "Every earlier turn keeps its own copy — expand it under that message "
+                "in the chat on the left."
+            )
 
         with st.expander("Turn JSON"):
             st.json(turn["turn_json"])

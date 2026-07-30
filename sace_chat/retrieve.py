@@ -48,6 +48,34 @@ MESSAGE_WEIGHT = 0.9
 
 _SELECT_COLS = "id, title, text, intent, priority, terminal, exclusive, source, learned_kind"
 
+# Priority ranks strictly ABOVE distance — but only inside an intent's own rule
+# set, never across the general pool. The two candidate sets differ in kind:
+#
+#   Within one intent, every candidate handles the same situation, so priority is
+#   the only thing that should decide between them. This matters because learned
+#   rules default to normal priority and terminal=False: a learned paraphrase of
+#   the DNC rule was observed outranking `special_dnc` on distance, which
+#   cancelled the call-ending behaviour of a compliance-critical rule. A soft
+#   distance discount does not fix that — the rival was 0.255 closer, far more
+#   than any sane discount — so critical genuinely has to mean "always wins".
+#
+#   Across the general pool the candidates are unrelated to each other, so
+#   priority carries no comparative meaning and applying it would be actively
+#   harmful: `medical_emergency` is critical, and any thumb on its scale would
+#   make it outrank the right rule on every ordinary turn. There, distance is the
+#   only signal, and it is used alone.
+#
+# Postgres cannot reference a SELECT alias in an ORDER BY expression, so the
+# scored rows go through a subquery.
+_PRIORITY_RANK = """
+    CASE priority
+        WHEN 'critical' THEN 0
+        WHEN 'high' THEN 1
+        WHEN 'normal' THEN 2
+        ELSE 3
+    END
+"""
+
 
 @dataclass
 class CallState:
@@ -167,10 +195,12 @@ def _fetch_by_intent(conn, intent: str, qvec, table: str) -> Chunk | None:
     row = conn.execute(
         text(
             f"""
-            SELECT {_SELECT_COLS}, embedding <=> :qvec AS distance
-            FROM {table}
-            WHERE intent = :intent
-            ORDER BY distance
+            SELECT * FROM (
+                SELECT {_SELECT_COLS}, embedding <=> :qvec AS distance
+                FROM {table}
+                WHERE intent = :intent
+            ) AS scored
+            ORDER BY {_PRIORITY_RANK}, distance
             LIMIT 1
             """
         ),

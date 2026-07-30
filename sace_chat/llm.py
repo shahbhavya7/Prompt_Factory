@@ -12,6 +12,33 @@ import re
 
 TURN_SCHEMA_KEYS = ("intent", "reply", "call_should_end", "extracted_fields")
 
+
+def build_messages(system: str, user: str) -> list[dict]:
+    """The exact message list a turn decision is sent as.
+
+    Single source of truth on purpose: the engine captures this to show what was
+    sent, and OpenAICompatibleLLM.chat_json sends this same function's output. If
+    the shape ever changes, both change together, so the transparency viewer
+    cannot drift into showing a reconstruction of a payload that differs from the
+    real one.
+    """
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def render_messages(messages: list[dict]) -> str:
+    """The messages as one verbatim string, for display.
+
+    Every character of every message content appears unmodified; the only added
+    text is the `=== ROLE ===` separators, which exist because the API takes a
+    list of messages and a text box can only show one string.
+    """
+    return "\n\n".join(
+        f"=== {m['role'].upper()} ===\n{m['content']}" for m in messages
+    )
+
 # The mock routes off whichever rule the prompt says is governing — the same
 # thing the real model is told to follow.
 _GOVERNING_RE = re.compile(r"GOVERNING RULE.*?\[([a-z0-9_]+)\]", re.DOTALL)
@@ -110,10 +137,7 @@ class OpenAICompatibleLLM:
         return kwargs
 
     def chat_json(self, system: str, user: str) -> str:
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ]
+        messages = build_messages(system, user)
         try:
             resp = self._client.chat.completions.create(**self._kwargs(messages, json_mode=True))
         except Exception:

@@ -18,7 +18,7 @@ import time
 
 from sace_chat.assemble import build_turn_prompt
 from sace_chat.db import engine as db_engine
-from sace_chat.llm import parse_json_object
+from sace_chat.llm import build_messages, parse_json_object, render_messages
 from sace_chat.retrieve import IntentRouter, retrieve
 from sace_chat.tokens import est_tokens
 
@@ -141,6 +141,31 @@ def _extract_question(reply_text: str) -> str | None:
     return None
 
 
+class PromptCaptureError(AssertionError):
+    """The captured payload does not contain this turn's caller message.
+
+    Raised rather than logged. The whole point of the capture is that what the
+    viewer shows IS what was sent; if that invariant breaks, the display is
+    lying, and the off-by-one or stale-state bug behind it needs to surface
+    immediately rather than be discovered later from a plausible-looking
+    transcript.
+    """
+
+
+def assert_message_present(prompt_sent: str, user_message: str):
+    """The caller's message for a turn must appear verbatim in that turn's
+    captured payload. Guards against capturing the wrong turn's prompt, or
+    rebuilding it after state has advanced."""
+    if not user_message or not user_message.strip():
+        return
+    if user_message not in prompt_sent:
+        raise PromptCaptureError(
+            f"caller message not found verbatim in the captured prompt.\n"
+            f"  message: {user_message!r}\n"
+            f"  captured {len(prompt_sent)} chars ending: ...{prompt_sent[-200:]!r}"
+        )
+
+
 def question_key(question: str) -> str:
     """Identity of a question for dedup.
 
@@ -174,7 +199,19 @@ class Engine:
                 precedence=self.manager.resolve_precedence,
             )
 
-    def _decide(self, prompt, user_message, state, notes):
+    def _decide(self, prompt, user_message, state, notes, sent_log):
+        # Capture the payload HERE, immediately before the call, from the same
+        # builder the client uses — never rebuilt afterwards from state that may
+        # since have moved on.
+        messages = build_messages(prompt, user_message)
+        prompt_sent = render_messages(messages)
+        assert_message_present(prompt_sent, user_message)
+        sent_log.append({
+            "prompt_sent": prompt_sent,
+            "messages": messages,
+            "tokens": est_tokens(prompt_sent),
+        })
+
         raw = self.llm.chat_json(prompt, user_message)
         decision, parse_error = parse_json_object(raw)
         if decision is None:
@@ -192,6 +229,9 @@ class Engine:
     def step(self, state, history, user_message):
         start = time.perf_counter()
         notes = []
+        # One entry per LLM call this turn, appended at call time. A regeneration
+        # adds a second entry, so both payloads stay inspectable.
+        sent_log = []
 
         # 1. One query against the flat pool.
         retrieval = self._retrieve(state, user_message, history)
@@ -200,7 +240,7 @@ class Engine:
 
         # 2. One structured decision.
         prompt = build_turn_prompt(self.stable_core, state, retrieval, history)
-        valid, raw = self._decide(prompt, user_message, state, notes)
+        valid, raw = self._decide(prompt, user_message, state, notes, sent_log)
 
         # 3. Validate the reply against the rule that was supposed to govern it.
         scores = score_reply(valid["reply"], retrieval.rules, self.embedder)
@@ -212,7 +252,7 @@ class Engine:
             prompt = build_turn_prompt(
                 self.stable_core, state, retrieval, history, reinforce_reason=reason
             )
-            valid, raw = self._decide(prompt, user_message, state, notes)
+            valid, raw = self._decide(prompt, user_message, state, notes, sent_log)
             scores = score_reply(valid["reply"], retrieval.rules, self.embedder)
             outcome, still_wrong = self._judge(scores, governing, retrieval)
             regenerated = True
@@ -257,7 +297,20 @@ class Engine:
         prompt_tokens = est_tokens(prompt)
         elapsed_ms = (time.perf_counter() - start) * 1000
 
+        final_sent = sent_log[-1]
         debug = {
+            # What the model actually received for this turn, captured at call
+            # time: system + user, verbatim. `prompt_sent` is the payload behind
+            # the reply shown; `sent_log` holds every call made this turn, so a
+            # regeneration's first attempt stays visible too.
+            "prompt_sent": final_sent["prompt_sent"],
+            "prompt_sent_tokens": final_sent["tokens"],
+            "llm_messages": final_sent["messages"],
+            "sent_log": sent_log,
+            "llm_calls": len(sent_log),
+            "caller_message": user_message,
+            # The system half alone, for the token comparison against the
+            # monolith system prompt (like against like).
             "assembled_prompt": prompt,
             "assembled_prompt_tokens": prompt_tokens,
             "monolith_tokens": self.monolith_tokens,
