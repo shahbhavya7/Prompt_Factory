@@ -1,0 +1,30 @@
+# sace-chat — pinned. Versions are the ones actually installed and exercised,
+# not guessed from docs.
+
+# ── core SACE (chat path) ────────────────────────────────────────────────────
+SQLAlchemy==2.0.51
+psycopg2-binary==2.9.12
+pgvector==0.5.0
+openai==2.50.0
+tiktoken==0.13.0
+python-dotenv==1.2.2
+streamlit==1.60.0
+
+# ── voice path ──────────────────────────────────────────────────────────────
+# 1.6.7 is the AgentSession API (livekit-agents 1.x). This is NOT compatible
+# with the 0.12.x VoicePipelineAgent examples still found in older tutorials:
+# that class does not exist here. voice_agent.py is written against the hooks
+# this release actually exposes (Agent.on_user_turn_completed, Agent.llm_node,
+# Agent.tts_node, Agent.default.*, AgentSession.say/generate_reply). Do not
+# float this pin without re-reading those signatures.
+livekit-agents==1.6.7
+livekit-plugins-deepgram==1.6.7
+livekit-plugins-silero==1.6.7
+livekit-plugins-openai==1.6.7
+livekit-plugins-turn-detector==1.6.7
+
+# ── optional: local hot-path embedder (EMBED_HOTPATH=local) ─────────────────
+# Only needed to move intent-exemplar matching off the network. The KB stays on
+# OpenAI 1536-dim vectors either way — see embeddings.get_hotpath_embedder for
+# why a dimension mismatch here is safe and where it would not be.
+# sentence-transformers==3.3.1

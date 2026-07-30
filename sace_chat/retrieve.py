@@ -67,13 +67,16 @@ _SELECT_COLS = "id, title, text, intent, priority, terminal, exclusive, source, 
 #
 # Postgres cannot reference a SELECT alias in an ORDER BY expression, so the
 # scored rows go through a subquery.
+#   Only `critical` hard-outranks — deliberately binary, not a full ordering.
+#   Ranking every tier above distance also made learned rules unreachable for any
+#   intent whose seed rule is merely `high` (callback_request, busy, elsewhere,
+#   redirect, language — 5 of 14), since learned rules are inserted at `normal`.
+#   That silently disabled the learning loop for most intents. `critical` is
+#   reserved for the compliance closes that must never be overridden (dnc,
+#   abuse); everywhere else the closer rule wins, so a learned rule can actually
+#   take effect.
 _PRIORITY_RANK = """
-    CASE priority
-        WHEN 'critical' THEN 0
-        WHEN 'high' THEN 1
-        WHEN 'normal' THEN 2
-        ELSE 3
-    END
+    CASE WHEN priority = 'critical' THEN 0 ELSE 1 END
 """
 
 
@@ -138,10 +141,21 @@ class IntentRouter:
     round-trips to every reply.
     """
 
-    def __init__(self, embedder, threshold: float = INTENT_THRESHOLD):
+    def __init__(self, embedder, threshold: float = INTENT_THRESHOLD, hotpath_embedder=None):
+        # `embedder` is the KB embedder (pgvector-compatible). `hotpath` may be a
+        # different, smaller, local model — exemplar matching never touches
+        # Postgres, so its dimension only has to agree with itself. See
+        # embeddings.get_hotpath_embedder for the full rule on which is used where.
+        from sace_chat.embeddings import get_hotpath_embedder
+
         self.embedder = embedder
+        self.hotpath = hotpath_embedder or get_hotpath_embedder(embedder)
         self.threshold = threshold
         self._vectors: list[tuple[str, list[float]]] | None = None
+
+    @property
+    def shares_kb_embedder(self) -> bool:
+        return self.hotpath is self.embedder
 
     def warm(self):
         if self._vectors is not None:
@@ -151,11 +165,23 @@ class IntentRouter:
             for exemplar in exemplars:
                 labels.append(intent)
                 texts.append(exemplar)
-        self._vectors = list(zip(labels, embed_many(self.embedder, texts)))
+        # Embedded once, at startup, in a single batch. Exemplars are static, so
+        # doing this per turn would add a round-trip of dead air to every reply.
+        self._vectors = list(zip(labels, embed_many(self.hotpath, texts)))
 
-    def detect(self, message_vec) -> tuple[str | None, float, list]:
-        """Returns (intent or None, best similarity, ranked [(intent, sim)...])."""
+    def detect(self, message: str, kb_message_vec=None) -> tuple[str | None, float, list]:
+        """Returns (intent or None, best similarity, ranked [(intent, sim)...]).
+
+        `kb_message_vec` is the vector retrieval already computed with the KB
+        embedder. When the hot path uses that same embedder it is reused, so the
+        default configuration still costs exactly one embedding call per turn;
+        only a genuinely different hot-path model embeds again, locally.
+        """
         self.warm()
+        if self.shares_kb_embedder and kb_message_vec is not None:
+            message_vec = kb_message_vec
+        else:
+            message_vec = self.hotpath.embed(message)
         best_per_intent: dict[str, float] = {}
         for intent, vec in self._vectors:
             sim = _cosine(message_vec, vec)
@@ -263,7 +289,7 @@ def retrieve(
         message_vec = embedder.embed(message)
         pool_vec = message_vec
 
-    intent, intent_sim, ranked = router.detect(message_vec)
+    intent, intent_sim, ranked = router.detect(message, kb_message_vec=message_vec)
     result = Retrieval(
         intent=intent,
         intent_similarity=round(intent_sim, 3),

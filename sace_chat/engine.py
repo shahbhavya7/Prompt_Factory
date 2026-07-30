@@ -199,18 +199,190 @@ class Engine:
                 precedence=self.manager.resolve_precedence,
             )
 
-    def _decide(self, prompt, user_message, state, notes, sent_log):
-        # Capture the payload HERE, immediately before the call, from the same
-        # builder the client uses — never rebuilt afterwards from state that may
-        # since have moved on.
-        messages = build_messages(prompt, user_message)
+    def build_turn_context(self, state, history, user_message):
+        """Everything step() does UP TO the LLM call — and nothing more.
+
+        Makes NO completion call. This is the shared path: engine.step() calls it
+        for the chat app, and voice_agent.py calls it to build the system prompt
+        it hands to LiveKit's streaming LLM. Retrieval, precedence and assembly
+        therefore exist in exactly one place, so the prompt a voice caller hears
+        is built by the same code as the prompt a chat user sees.
+
+        Returns (prompt_sent, governing, reference, debug).
+
+        `debug["retrieval"]` is the live Retrieval object, kept so callers can
+        score a reply against the same rules without re-querying. It holds Chunk
+        objects, so it is not JSON-serialisable — drop it before persisting.
+        """
+        t0 = time.perf_counter()
+        retrieval = self._retrieve(state, user_message, history)
+        system_prompt = build_turn_prompt(self.stable_core, state, retrieval, history)
+
+        # Captured here, at the moment of assembly, from the same builder the
+        # client sends — never rebuilt afterwards from state that has moved on.
+        messages = build_messages(system_prompt, user_message)
         prompt_sent = render_messages(messages)
         assert_message_present(prompt_sent, user_message)
-        sent_log.append({
+
+        prompt_tokens = est_tokens(system_prompt)
+        debug = {
+            "system_prompt": system_prompt,
             "prompt_sent": prompt_sent,
-            "messages": messages,
-            "tokens": est_tokens(prompt_sent),
-        })
+            "llm_messages": messages,
+            "prompt_sent_tokens": est_tokens(prompt_sent),
+            "assembled_prompt": system_prompt,
+            "assembled_prompt_tokens": prompt_tokens,
+            "monolith_tokens": self.monolith_tokens,
+            "saved_pct": (1 - prompt_tokens / self.monolith_tokens) * 100,
+            "context_ms": (time.perf_counter() - t0) * 1000,
+            "intent": retrieval.intent,
+            "intent_similarity": retrieval.intent_similarity,
+            "intent_ranked": retrieval.intent_ranked,
+            "query_text": retrieval.query_text,
+            "opt_out": retrieval.opt_out,
+            "notes": list(retrieval.notes),
+            "governing": _rule_debug(retrieval.governing, {}) if retrieval.governing else None,
+            "reference": [_rule_debug(r, {}) for r in retrieval.reference],
+            "retrieval": retrieval,
+            "sent_entry": {
+                "prompt_sent": prompt_sent,
+                "messages": messages,
+                "tokens": est_tokens(prompt_sent),
+            },
+        }
+        return prompt_sent, retrieval.governing, retrieval.reference, debug
+
+    def validate_reply(self, reply_text, retrieval) -> dict:
+        """Log-only validation of a reply that has ALREADY been delivered.
+
+        Same scoring and same verdicts as the chat path's gate, but it cannot ask
+        for a regeneration — by the time the voice path calls this, the words
+        have been spoken. The result is recorded so a bad turn is visible after
+        the fact rather than silently lost.
+        """
+        scores = score_reply(reply_text, retrieval.rules, self.embedder)
+        outcome, reason = self._judge(scores, retrieval.governing, retrieval)
+        gov_id = retrieval.governing.chunk.id if retrieval.governing else None
+        return {
+            "outcome": outcome,
+            "governing_cosine": scores.get(gov_id, {}).get("cosine", 0.0) if gov_id else 0.0,
+            "grounded": outcome == "grounded",
+            "spliced": outcome == "spliced",
+            "reason": reason,
+            "scores": scores,
+        }
+
+    def prepare_reply(self, state, history, user_message, ctx=None, validate_only=False):
+        """Generate the next spoken reply without mutating call state.
+
+        This is the pre-speech half of ``step()``. The chat UI can do it all in
+        one blocking call, but the voice path must validate and correct the
+        model's JSON decision before TTS speaks anything. Returning the pending
+        state changes lets voice persist the turn only after the audio is done.
+        """
+        start = time.perf_counter()
+        notes = []
+        sent_log = []
+
+        if ctx is None:
+            _, governing, _, ctx = self.build_turn_context(state, history, user_message)
+        else:
+            governing = ctx["retrieval"].governing
+        retrieval = ctx["retrieval"]
+        prompt = ctx["system_prompt"]
+        notes.extend(ctx["notes"])
+
+        valid, raw = self._decide(
+            prompt, user_message, state, notes, sent_log, sent_entry=ctx.get("sent_entry")
+        )
+
+        scores = score_reply(valid["reply"], retrieval.rules, self.embedder)
+        outcome, reason = self._judge(scores, governing, retrieval)
+
+        regenerated = False
+        if reason and validate_only:
+            notes.append(f"validate-only: {outcome} recorded, not corrected ({reason})")
+        elif reason:
+            notes.append(f"regenerating before speech: {reason}")
+            prompt = build_turn_prompt(
+                self.stable_core, state, retrieval, history, reinforce_reason=reason
+            )
+            valid, raw = self._decide(prompt, user_message, state, notes, sent_log)
+            scores = score_reply(valid["reply"], retrieval.rules, self.embedder)
+            outcome, still_wrong = self._judge(scores, governing, retrieval)
+            regenerated = True
+            if still_wrong:
+                notes.append(f"still failing after one regeneration: {still_wrong}")
+
+        reply_text = valid["reply"]
+        if governing is not None:
+            if governing.chunk.terminal:
+                if not valid["call_should_end"]:
+                    notes.append(f"{governing.chunk.id} is terminal; forced the call to end")
+                valid["call_should_end"] = True
+                reply_text, trimmed = strip_after_terminal(reply_text)
+                if trimmed:
+                    notes.append("dropped a trailing question from a terminal reply")
+            elif valid["call_should_end"]:
+                notes.append(f"{governing.chunk.id} is not terminal; refused to end the call")
+                valid["call_should_end"] = False
+
+        question = _extract_question(reply_text)
+        if question:
+            key = question_key(question)
+            if key and key in {question_key(q) for q in state.asked_questions}:
+                notes.append(f"re-asked a question already in ALREADY ASKED: {question!r}")
+
+        governing_cos = scores.get(governing.chunk.id, {}).get("cosine", 0.0) if governing else 0.0
+        final_sent = sent_log[-1]
+        debug = {
+            "prompt_sent": final_sent["prompt_sent"],
+            "prompt_sent_tokens": final_sent["tokens"],
+            "llm_messages": final_sent["messages"],
+            "sent_log": sent_log,
+            "llm_calls": len(sent_log),
+            "caller_message": user_message,
+            "assembled_prompt": prompt,
+            "assembled_prompt_tokens": est_tokens(prompt),
+            "monolith_tokens": self.monolith_tokens,
+            "saved_pct": (1 - est_tokens(prompt) / self.monolith_tokens) * 100,
+            "elapsed_ms": (time.perf_counter() - start) * 1000,
+            "turn_json": valid,
+            "raw_llm_output": raw,
+            "notes": notes,
+            "outcome": outcome,
+            "grounded": outcome == "grounded",
+            "spliced": outcome == "spliced",
+            "regenerated": regenerated,
+            "governing_cosine": governing_cos,
+            "grounding_threshold": GROUNDING_THRESHOLD,
+            "scores": scores,
+            "intent": retrieval.intent,
+            "intent_similarity": retrieval.intent_similarity,
+            "intent_ranked": retrieval.intent_ranked,
+            "query_text": retrieval.query_text,
+            "governing": _rule_debug(governing, scores) if governing else None,
+            "reference": [_rule_debug(r, scores) for r in retrieval.reference],
+            "call_should_end": bool(valid["call_should_end"]),
+            "extracted_fields": dict(valid["extracted_fields"]),
+            "asked_question": question,
+            "retrieval": retrieval,
+        }
+        return reply_text, debug
+
+    def _decide(self, prompt, user_message, state, notes, sent_log, sent_entry=None):
+        # The first call of a turn reuses the capture build_turn_context already
+        # made; a regeneration captures its own, since its prompt differs.
+        if sent_entry is None:
+            messages = build_messages(prompt, user_message)
+            prompt_sent = render_messages(messages)
+            assert_message_present(prompt_sent, user_message)
+            sent_entry = {
+                "prompt_sent": prompt_sent,
+                "messages": messages,
+                "tokens": est_tokens(prompt_sent),
+            }
+        sent_log.append(sent_entry)
 
         raw = self.llm.chat_json(prompt, user_message)
         decision, parse_error = parse_json_object(raw)
@@ -226,28 +398,38 @@ class Engine:
         notes.extend(valid["warnings"])
         return valid, raw
 
-    def step(self, state, history, user_message):
+    def step(self, state, history, user_message, validate_only=False):
+        """The chat turn: retrieve, decide, validate, apply.
+
+        `validate_only=True` records a failed validation instead of acting on it —
+        no regeneration. The default is False, so the Streamlit chat app's
+        blocking behaviour is unchanged.
+        """
         start = time.perf_counter()
         notes = []
         # One entry per LLM call this turn, appended at call time. A regeneration
         # adds a second entry, so both payloads stay inspectable.
         sent_log = []
 
-        # 1. One query against the flat pool.
-        retrieval = self._retrieve(state, user_message, history)
-        notes.extend(retrieval.notes)
-        governing = retrieval.governing
+        # 1 + 2. Retrieval and assembly, shared with the voice path.
+        _, governing, _, ctx = self.build_turn_context(state, history, user_message)
+        retrieval = ctx["retrieval"]
+        prompt = ctx["system_prompt"]
+        notes.extend(ctx["notes"])
 
-        # 2. One structured decision.
-        prompt = build_turn_prompt(self.stable_core, state, retrieval, history)
-        valid, raw = self._decide(prompt, user_message, state, notes, sent_log)
+        # 3. One structured decision, reusing the capture made during assembly.
+        valid, raw = self._decide(
+            prompt, user_message, state, notes, sent_log, sent_entry=ctx["sent_entry"]
+        )
 
-        # 3. Validate the reply against the rule that was supposed to govern it.
+        # 4. Validate the reply against the rule that was supposed to govern it.
         scores = score_reply(valid["reply"], retrieval.rules, self.embedder)
         outcome, reason = self._judge(scores, governing, retrieval)
 
         regenerated = False
-        if reason:
+        if reason and validate_only:
+            notes.append(f"validate-only: {outcome} recorded, not corrected ({reason})")
+        elif reason:
             notes.append(f"regenerating: {reason}")
             prompt = build_turn_prompt(
                 self.stable_core, state, retrieval, history, reinforce_reason=reason
@@ -259,7 +441,7 @@ class Engine:
             if still_wrong:
                 notes.append(f"still failing after one regeneration: {still_wrong}")
 
-        # 4. `terminal` decides whether the call ends — in both directions. The
+        # 5. `terminal` decides whether the call ends — in both directions. The
         # model is not allowed a vote: it hung up on non-terminal rules (ending
         # the call right after handing over the counselors' number, before the
         # caller could reply), and it also missed endings the rule required.
@@ -276,7 +458,7 @@ class Engine:
                 notes.append(f"{governing.chunk.id} is not terminal; refused to end the call")
                 valid["call_should_end"] = False
 
-        # 5. Apply to state.
+        # 6. Apply to state.
         state.intent = retrieval.intent or "none"
         state.opt_out = state.opt_out or retrieval.opt_out
         state.ended = state.ended or valid["call_should_end"]

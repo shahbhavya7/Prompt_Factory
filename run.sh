@@ -7,11 +7,18 @@
 # in-process (api.py was removed when the turn loop was rebuilt), so "frontend"
 # and "backend" are the same process here.
 #
-#   ./run.sh start        db + app, loading the KB if the table is empty
+#   ./run.sh start        db + app in the BACKGROUND (logs go to a file)
+#   ./run.sh dev          db + app in the FOREGROUND, logs live in this terminal
+#   ./run.sh voice        db + voice agent in console mode — talk to it with your
+#                         mic; per-turn logs stream live. Needs no LiveKit creds.
+#   ./run.sh voice-dev    voice agent as a LiveKit worker (needs a real
+#                         LIVEKIT_URL + key/secret), logs live
+#   ./run.sh all          db + dashboard + local audible voice agent
+#   ./run.sh all-livekit  db + dashboard + LiveKit worker waiting for rooms
 #   ./run.sh stop         stop the app and the db container
 #   ./run.sh restart
 #   ./run.sh status       what's up, on which ports, with row counts
-#   ./run.sh logs [app|db]
+#   ./run.sh logs [app|db]   follow the background app's log
 #   ./run.sh reload-kb    re-embed the seed rules; keeps learned rules
 #   ./run.sh reset-kb     drop and rebuild the table; LOSES learned rules
 #   ./run.sh repair       audit and re-embed any null/zero/wrong-dim vectors
@@ -229,6 +236,82 @@ cmd_start() {
   printf '  logs    ./run.sh logs app\n'
 }
 
+# Foreground: the process owns this terminal and its logs stream here. Ctrl-C
+# stops it. Use this rather than `start` when you want to watch what happens.
+cmd_dev() {
+  activate_env; load_dotenv; check_env_sanity
+  start_db
+  ensure_kb
+  stop_app                      # never leave a background copy on the same port
+  echo
+  info "app in the foreground — logs below, Ctrl-C to stop"
+  printf '  http://localhost:%s\n\n' "$APP_PORT"
+  exec streamlit run streamlit_app.py \
+    --server.port "$APP_PORT" \
+    --server.headless true \
+    --browser.gatherUsageStats false
+}
+
+# Console mode talks to your microphone directly and needs NO LiveKit
+# credentials — it runs a local mock job. This is the way to place a test call.
+cmd_voice() {
+  activate_env; load_dotenv; check_env_sanity
+  [[ -n "${DEEPGRAM_API_KEY:-}" ]] || die "DEEPGRAM_API_KEY unset — voice needs Deepgram for STT and TTS"
+  start_db
+  ensure_kb
+  echo
+  info "voice agent · console mode · speak into your mic"
+  printf '  one line per turn: intent, governing rule, tokens, grounding cosine, latency\n'
+  printf '  turns are also written to the `turns` table -> Live voice monitor page\n'
+  printf '  Ctrl-C to hang up (the learning loop runs on shutdown)\n\n'
+  exec python voice_agent.py console
+}
+
+# Worker mode: registers with LiveKit and waits for rooms. Needs real creds.
+cmd_voice_dev() {
+  activate_env; load_dotenv; check_env_sanity
+  [[ -n "${DEEPGRAM_API_KEY:-}" ]] || die "DEEPGRAM_API_KEY unset"
+  case "${LIVEKIT_URL:-}" in
+    ""|*your-project*) die "LIVEKIT_URL is unset or still the placeholder — worker mode needs a real project URL (use './run.sh voice' for a local mic call instead)" ;;
+  esac
+  [[ -n "${LIVEKIT_API_KEY:-}" && -n "${LIVEKIT_API_SECRET:-}" ]] || die "LIVEKIT_API_KEY / LIVEKIT_API_SECRET unset"
+  start_db
+  ensure_kb
+  echo
+  info "voice agent · LiveKit worker · ${LIVEKIT_URL}"
+  exec python voice_agent.py dev
+}
+
+cmd_all() {
+  activate_env; load_dotenv; check_env_sanity
+  [[ -n "${DEEPGRAM_API_KEY:-}" ]] || die "DEEPGRAM_API_KEY unset"
+  start_db
+  ensure_kb
+  start_app || exit 1
+  echo
+  info "dashboard + local voice agent"
+  printf '  dashboard http://localhost:%s\n' "$APP_PORT"
+  printf '  audio     local microphone + speakers\n\n'
+  exec python voice_agent.py console
+}
+
+cmd_all_livekit() {
+  activate_env; load_dotenv; check_env_sanity
+  [[ -n "${DEEPGRAM_API_KEY:-}" ]] || die "DEEPGRAM_API_KEY unset"
+  case "${LIVEKIT_URL:-}" in
+    ""|*your-project*) die "LIVEKIT_URL is unset or still the placeholder — all-livekit mode needs a real LiveKit project URL" ;;
+  esac
+  [[ -n "${LIVEKIT_API_KEY:-}" && -n "${LIVEKIT_API_SECRET:-}" ]] || die "LIVEKIT_API_KEY / LIVEKIT_API_SECRET unset"
+  start_db
+  ensure_kb
+  start_app || exit 1
+  echo
+  info "dashboard + LiveKit voice worker"
+  printf '  dashboard http://localhost:%s\n' "$APP_PORT"
+  printf '  worker    %s\n\n' "$LIVEKIT_URL"
+  exec python voice_agent.py dev
+}
+
 cmd_stop() {
   info "stopping"
   stop_app
@@ -280,6 +363,11 @@ cmd_shell() {
 
 case "${1:-start}" in
   start)     cmd_start ;;
+  all)       cmd_all ;;
+  all-livekit) cmd_all_livekit ;;
+  dev)       cmd_dev ;;
+  voice)     cmd_voice ;;
+  voice-dev) cmd_voice_dev ;;
   stop)      cmd_stop ;;
   restart)   cmd_stop; echo; cmd_start ;;
   status)    cmd_status ;;
@@ -289,6 +377,8 @@ case "${1:-start}" in
   repair)    activate_env; load_dotenv; python scripts/repair_embeddings.py "${2:---fix}" ;;
   shell)     cmd_shell ;;
   -h|--help|help)
-    sed -n '3,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown command '${1}' — try: start stop restart status logs reload-kb reset-kb repair shell" ;;
+    # Print the leading comment block and stop at the first line that is not a
+    # comment, so the help text cannot drift out of sync with a line number.
+    awk 'NR>1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}" ;;
+  *) die "unknown command '${1}' — try: start all all-livekit dev voice voice-dev stop restart status logs reload-kb reset-kb repair shell" ;;
 esac
