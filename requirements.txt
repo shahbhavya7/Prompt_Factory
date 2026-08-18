@@ -22,6 +22,7 @@ livekit-plugins-deepgram==1.6.7
 livekit-plugins-silero==1.6.7
 livekit-plugins-openai==1.6.7
 livekit-plugins-turn-detector==1.6.7
+livekit-plugins-elevenlabs==1.6.7
 
 # ── optional: local hot-path embedder (EMBED_HOTPATH=local) ─────────────────
 # Only needed to move intent-exemplar matching off the network. The KB stays on
