@@ -144,6 +144,37 @@ INTENT_EXEMPLARS = {
         "what? you cut out there",
         "the line is really bad, say that again",
     ],
+    # A question about what THEY would owe or pay out of pocket — distinct
+    # from pricing_q, which is about the cost/value of switching plans.
+    "payment_q": [
+        "do I have a copay for this",
+        "how much will I owe out of pocket",
+        "is there a fee for keeping my Medi-Cal",
+        "will I get billed for this call or the renewal",
+        "what's the payment I need to make",
+    ],
+    "appointment_scheduling": [
+        "can you set up an appointment for me",
+        "I need to book a visit with my doctor",
+        "when can I come in and see someone",
+        "can we schedule a checkup",
+    ],
+    # Asking HOW to renew/keep coverage active — distinct from elsewhere
+    # (already has other coverage) and from counselor_assist's plain unsure.
+    "eligibility_renewal": [
+        "what do I need to do to renew my Medi-Cal",
+        "how do I keep my coverage active",
+        "what paperwork do I need to submit to stay enrolled",
+        "how do I reapply before it lapses",
+        "what's the renewal process, what do you need from me",
+    ],
+    "complaint_escalation": [
+        "I want to speak to a supervisor",
+        "I want to file a complaint about this",
+        "this is the third call, I want to talk to a manager",
+        "can I speak to someone above you",
+        "I'd like to report how this call has gone",
+    ],
 }
 
 
@@ -210,21 +241,60 @@ RULES = [
         priority="high",
     ),
     Chunk(
-        id="still_has_benefits_close",
-        title="Caller still has benefits — nothing to do",
+        id="still_has_benefits_plan_check",
+        title="Caller still has benefits — ask which plan it's through",
         text=(
             "AFTER Maya has asked whether the caller still has their Medi-Cal benefits, WHEN the caller says they DO "
             "still have them — 'yes', 'yeah I still have it', 'I do', 'it's still active', 'nothing's changed' — "
-            "the call is finished and there is nothing for them to do. Record the outcome as 'Still has benefits' "
-            'and say exactly: "Oh, that\'s great to hear — then there\'s nothing you need to do at all. We want you '
-            'and your family to always have the care you need. Thanks for your time — take care!" Then stop. This '
-            "line belongs to this branch only — never say it to a caller who was unsure or who said no, and never "
-            "mention the counselors or the word KEEP here."
+            "do not close yet. Acknowledge briefly and ask which county administers their Medi-Cal, in full: "
+            '"Oh, that\'s great to hear! Just so our records are accurate — which county is your Medi-Cal under '
+            'these days?" Then wait. Add a county field to extracted_fields, set to the county they name, or to '
+            "unknown if they don't know or can't say. Never mention the counselors or the word KEEP here."
         ),
         cue=(
             "yes I still have it, I do, it's still active, nothing's changed, still covered, yes it's "
             "fine as far as I know, yep still got it -- the caller says their Medi-Cal benefits are still "
             "in place."
+        ),
+        intent=None,
+        priority="high",
+    ),
+    Chunk(
+        id="renewal_reminder_offer",
+        title="Offer a renewal-reminder text before closing",
+        text=(
+            "AFTER Maya has asked which county administers the caller's Medi-Cal, WHEN the caller has answered (a "
+            "county name, or that they don't know) — thank them for confirming and offer one last thing before "
+            'closing, in full: "Perfect, thank you for confirming. Would it help if we sent you a text reminder '
+            'next year when it\'s time to renew, so you never lose coverage by surprise?" Then wait for a yes or '
+            'no. Add their answer to extracted_fields (for example: {"renewal_reminder": "yes"} or '
+            '{"renewal_reminder": "no"}). Do not close the call on this turn.'
+        ),
+        cue=(
+            "it's under Sacramento county, Los Angeles county I believe, San Diego I think, I don't know "
+            "which county, not sure honestly, never checked which county -- the caller has answered which "
+            "county their Medi-Cal benefits are under."
+        ),
+        intent=None,
+        priority="high",
+    ),
+    Chunk(
+        id="still_has_benefits_close",
+        title="Renewal reminder answered — close",
+        text=(
+            "AFTER Maya has offered a renewal-reminder text, WHEN the caller answers yes or no to it, the call is "
+            "finished and there is nothing else for them to do. Add a renewal_reminder field to extracted_fields, "
+            "set to yes or no matching their answer. Record the outcome as 'Still has benefits' and say exactly "
+            "the line matching their answer. If they said yes: "
+            '"Wonderful — we\'ll text you a reminder next year. We want you and your family to always have the care '
+            'you need. Thanks for your time — take care!" If they said no or declined: "No problem at all. We want '
+            'you and your family to always have the care you need. Thanks for your time — take care!" Then stop. '
+            "This line belongs to this branch only — never say it to a caller who was unsure or who said no to "
+            "having benefits at all, and never mention the counselors or the word KEEP here."
+        ),
+        cue=(
+            "yes that would help, sure send it, yeah go ahead, no that's fine, no need, I'll remember on "
+            "my own, no thanks -- the caller has answered yes or no to the renewal-reminder offer."
         ),
         intent=None,
         priority="high",
@@ -748,6 +818,77 @@ RULES = [
         ),
         intent="garbled_audio",
         priority="normal",
+    ),
+    Chunk(
+        id="special_payment_q",
+        title="Copay or out-of-pocket payment question",
+        text=(
+            "WHEN the caller asks whether they owe a copay, fee, or any out-of-pocket payment for keeping or "
+            "renewing Medi-Cal, never quote a number or say yes or no — that is a billing question, not coverage "
+            'status: "That\'s something our coverage counselors handle directly — you can text the word KEEP, or '
+            'call {callback_number}, and they\'ll go through any payment questions with you." Then return to the '
+            "pending question. The call does not end here."
+        ),
+        cue=(
+            "do I have a copay, will I owe anything out of pocket, is there a fee to keep my Medi-Cal, "
+            "will I get billed for this, what's the payment I need to make, how much do I pay to stay "
+            "enrolled."
+        ),
+        intent="payment_q",
+        priority="normal",
+    ),
+    Chunk(
+        id="special_appointment_scheduling",
+        title="Asked to book or schedule an appointment",
+        text=(
+            "WHEN the caller asks Maya to set up, book or schedule an appointment or checkup, this call cannot do "
+            'that — it is outreach about coverage status only: "I\'m not able to book appointments on this line, '
+            "but our coverage counselors can point you the right way — text the word KEEP, or call "
+            '{callback_number}." Then return to the pending question.'
+        ),
+        cue=(
+            "can you set up an appointment, I need to book a visit with my doctor, when can I come in, "
+            "can we schedule a checkup, I want to make an appointment."
+        ),
+        intent="appointment_scheduling",
+        priority="normal",
+    ),
+    Chunk(
+        id="special_eligibility_renewal",
+        title="Asked how to renew or keep coverage active",
+        text=(
+            "WHEN the caller asks what they need to do, or what paperwork to submit, to renew or keep their "
+            "Medi-Cal active, this is exactly what the coverage counselors handle — do not describe steps, forms or "
+            'a timeline yourself: "Our coverage counselors walk people through exactly that, step by step — you can '
+            'text the word KEEP, or call {callback_number}, and they\'ll take it from there." Then return to the '
+            "pending question. The call does not end here."
+        ),
+        cue=(
+            "what do I need to do to renew, how do I keep my coverage active, what paperwork do I submit, "
+            "how do I reapply before it lapses, what's the renewal process, what do you need from me."
+        ),
+        intent="eligibility_renewal",
+        priority="normal",
+    ),
+    Chunk(
+        id="special_complaint_escalation",
+        title="Wants a supervisor or to file a complaint",
+        text=(
+            "WHEN the caller asks to speak to a supervisor or manager, or says they want to file a complaint about "
+            "this call or a prior one, do not argue or defend the call — acknowledge and hand off immediately: note "
+            'that an escalation was requested, then say: "Of course — I\'ll make sure that\'s passed along. You can '
+            'reach our coverage counselors directly at {callback_number}, and they can route you to someone who can '
+            'help with that. Take care." Then stop. Never say this is not possible, and never keep asking the '
+            "original coverage question afterward."
+        ),
+        cue=(
+            "I want to speak to a supervisor, I want to file a complaint, this is the third call, I want "
+            "a manager, can I speak to someone above you, I'd like to report how this call has gone."
+        ),
+        intent="complaint_escalation",
+        priority="high",
+        terminal=True,
+        exclusive=True,
     ),
 ]
 

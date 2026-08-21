@@ -131,7 +131,7 @@ class OpenAICompatibleLLM:
         self.name = self._model
 
     def _kwargs(self, messages, json_mode):
-        kwargs = {"model": self._model, "messages": messages}
+        kwargs = {"model": self._model, "messages": messages, "max_tokens": 220}
         # Reasoning models (gpt-5 family, o-series) reject an explicit
         # temperature with a 400.
         if not re.match(r"^(gpt-5|o\d)", self._model):

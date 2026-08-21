@@ -33,6 +33,10 @@ VALID_INTENTS = {
     "recorded_q",
     "frustration",
     "garbled_audio",
+    "payment_q",
+    "appointment_scheduling",
+    "eligibility_renewal",
+    "complaint_escalation",
 }
 
 # Retained ONLY for the callback-over-busy precedence rule. This is not intent

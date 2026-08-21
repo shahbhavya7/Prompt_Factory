@@ -294,9 +294,9 @@
       offline loop that grows the pool from real calls.
     </p>
     <div class="stat-row">
-      <div class="stat"><span class="n">33</span><span class="l">seed rules, flat pool, no stages</span></div>
+      <div class="stat"><span class="n">39</span><span class="l">seed rules, flat pool, no stages</span></div>
       <div class="stat"><span class="n">2</span><span class="l">entry points, one engine</span></div>
-      <div class="stat"><span class="n">5,782 → 965–1,296</span><span class="l">tokens/turn vs. monolith (78–83% smaller)</span></div>
+      <div class="stat"><span class="n">5,782 → ~1,000–1,350</span><span class="l">tokens/turn vs. monolith (roughly 77–82% smaller)</span></div>
       <div class="stat"><span class="n">0.45</span><span class="l">grounding cosine floor</span></div>
     </div>
   </header>
@@ -612,7 +612,7 @@
 
           <rect x="430" y="70" width="170" height="46" rx="9" class="fill-neutral" stroke-width="1.2"/>
           <text x="515" y="90" text-anchor="middle" font-size="11" font-weight="600">duplicate?</text>
-          <text x="515" y="105" text-anchor="middle" font-size="9.5" fill="var(--ink-faint)">cosine &gt; 0.85 vs. pool</text>
+          <text x="515" y="105" text-anchor="middle" font-size="9.5" fill="var(--ink-faint)">cosine &gt; 0.72 vs. own section</text>
 
           <rect x="430" y="130" width="170" height="46" rx="9" class="fill-neutral" stroke-width="1.2"/>
           <text x="515" y="150" text-anchor="middle" font-size="11" font-weight="600">conflict?</text>
@@ -666,7 +666,7 @@
       <div class="card">
         <h3><span class="pill live">now</span> retrieved pool</h3>
         <p>Stable core + exactly one governing rule (+ ≤1 reference rule) —
-        measured at <code>965–1,296</code> tokens/turn, a <code>78–83%</code> cut
+        measured at roughly <code>1,000–1,350</code> tokens/turn, a <code>77–82%</code> cut
         against the monolith, computed fresh per turn and reported as
         <code>saved_pct</code> in the debug trace.</p>
       </div>

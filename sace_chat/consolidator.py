@@ -23,13 +23,16 @@ from sace_chat.models import Chunk
 # these (or to no intent at all, which puts it in the general pool).
 ROUTABLE_INTENTS = set(INTENT_EXEMPLARS)
 
-# 0.9 is the textbook duplicate bar, but a short extracted candidate
-# restating a long, dense hand-authored chunk (100-200+ words of prose,
-# precedence rules, examples) naturally scores lower than a same-length
-# duplicate would under real embeddings (OpenAI text-embedding-3-small) —
-# 0.85 is still a strict bar for "this is clearly the same rule," empirically
-# verified against this KB's actual chunk lengths.
-DUPLICATE_THRESHOLD = 0.85
+# 0.85 (close to the textbook 0.9 duplicate bar) let real near-duplicates
+# through: pairwise-checked against this KB's actual learned rules, pairs
+# that are clearly the same rule restated — e.g. "caller doubts the
+# legitimacy of the call" vs "caller questions the legitimacy of the call",
+# both with near-identical scripted replies — scored 0.75-0.85 and were both
+# kept as separate rules. 0.72 catches that whole cluster while staying
+# above SAME_TOPIC_THRESHOLD, so a candidate that just barely misses
+# "duplicate" still gets the conflict check rather than slipping through
+# gate-free.
+DUPLICATE_THRESHOLD = 0.72
 SAME_TOPIC_THRESHOLD = 0.6
 
 _NUMBER_RE = re.compile(r"\b\d+(?:[:.]\d+)?\b")
@@ -218,16 +221,31 @@ class GateResult:
         self.detail = detail
 
 
-def _fetch_pool(conn, table: str):
-    """The whole pool. There is one flat memory now, so a candidate is compared
-    against every rule in it rather than only against its own former folder.
+def _fetch_pool(conn, table: str, intent: str | None):
+    """Rules in the candidate's own section only: same intent, or the general
+    pool (intent IS NULL) for a candidate with no intent.
+
+    A "caller is busy" candidate can never be retrieved against a "caller
+    wants a callback" turn — retrieve.py routes by intent first and only ever
+    considers one section at a time (see retrieve._fetch_by_intent /
+    _fetch_general). Comparing it for duplicates or conflicts against rules
+    from every other section wasted a growing number of cosine comparisons on
+    rules it could never actually collide with, and let two unrelated rules
+    that happen to score close in embedding space register as a false
+    "conflict" needing human review.
 
     Note the stored `embedding` is of each rule's CUE, so the candidate must be
     embedded from its cue too for the comparison to mean anything. Cue-to-cue is
     also the better duplicate test: two rules are duplicates when they fire on
     the same situation, which is exactly what a cue describes.
     """
-    return conn.execute(sql_text(f"SELECT id, text, embedding FROM {table}")).fetchall()
+    if intent is None:
+        query = f"SELECT id, text, embedding FROM {table} WHERE intent IS NULL"
+        params = {}
+    else:
+        query = f"SELECT id, text, embedding FROM {table} WHERE intent = :intent"
+        params = {"intent": intent}
+    return conn.execute(sql_text(query), params).fetchall()
 
 
 def run_learning_loop(transcript: str, embedder, conn, table: str = "chunks", llm=None) -> list[GateResult]:
@@ -261,7 +279,7 @@ def run_learning_loop(transcript: str, embedder, conn, table: str = "chunks", ll
             candidate_vec = check_embedding(
                 embedder.embed(candidate.retrieval_text), chunk_id="candidate"
             )
-            existing_rows = _fetch_pool(conn, table)
+            existing_rows = _fetch_pool(conn, table, candidate.intent)
 
             best_sim = 0.0
             best_match_id = None

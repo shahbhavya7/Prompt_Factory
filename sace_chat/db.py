@@ -189,6 +189,15 @@ def init_db():
         # what the vector actually represents.
         conn.execute(text("UPDATE chunks SET cue = text WHERE cue = ''"))
 
+        # retrieve.py's two lookups (_fetch_by_intent, _fetch_general) both
+        # filter on `intent` before doing anything else — without an index,
+        # that filter is a full sequential scan of the whole pool on every
+        # single turn, seed and learned rules alike. This is the "table of
+        # contents" fix: Postgres jumps straight to the matching rows instead
+        # of reading every row to check whether it qualifies. Same effect for
+        # `intent IS NULL` (the general pool) as for a specific label.
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chunks_intent ON chunks (intent)"))
+
 
 def _has_column(conn, column: str) -> bool:
     return bool(
