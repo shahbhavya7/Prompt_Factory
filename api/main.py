@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
-from sace_chat import manager
+from sace_chat import manager, review
 from sace_chat.consolidator import run_learning_loop
 from sace_chat.db import engine as db_engine
 from sace_chat.db import init_db, record_call_transcript
@@ -33,6 +33,7 @@ from sace_chat.kb import RULES, STABLE_CORE
 from sace_chat.llm import get_llm
 
 from api.models import (
+    ApproveRequest,
     CallStateModel,
     CallStatusResponse,
     DetailDebug,
@@ -173,6 +174,58 @@ def send_turn(call_id: str, body: TurnRequest):
             llm_calls=debug["llm_calls"],
         ),
     )
+
+
+# ───────────────────────────── review queue ─────────────────────────────────
+# Deliberately independent of any call: the queue is reviewed whenever a person
+# has time, which is usually with no call in flight and often with the voice
+# agent shut down entirely. That is also why these live on this HTTP API rather
+# than on voice_agent.py's websocket, which only exists while a call is running.
+
+
+@app.get("/review/pending")
+def review_pending():
+    """Everything awaiting a human, oldest first, plus the intent vocabulary a
+    reviewer can assign from."""
+    return {
+        "pending": review.list_pending(),
+        "intents": review.known_intents(),
+        "count": review.pending_count(),
+    }
+
+
+@app.post("/review/{review_id}/approve")
+def review_approve(review_id: str, body: ApproveRequest):
+    """Approve one queued rule, with the human's edits applied, and insert it.
+
+    `intent` is only applied when the payload actually carries the key — that is
+    what distinguishes "leave it as proposed" from "the human chose no intent",
+    which a null alone cannot express.
+    """
+    try:
+        result = review.approve(
+            review_id,
+            app.state.embedder,
+            text=body.text,
+            cue=body.cue,
+            intent=body.intent,
+            priority=body.priority,
+            learned_kind=body.learned_kind,
+            set_intent=body.set_intent,
+        )
+    except review.ReviewError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(500, f"{type(exc).__name__}: {exc}")
+    return result
+
+
+@app.post("/review/{review_id}/discard")
+def review_discard(review_id: str):
+    try:
+        return review.discard(review_id)
+    except review.ReviewError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/calls/{call_id}/end", response_model=EndCallResponse)

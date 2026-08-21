@@ -3,20 +3,25 @@
 Runs on a finished transcript, never during a live turn. Extracts candidate
 rules, tags each with an intent the semantic router can actually produce (or
 none, making it a general rule), then runs each through a verification gate
-(grounding -> duplicate -> conflict) before inserting into the ONE shared pool
-via the same insert path load_kb.py uses. Rejected candidates are persisted to
-needs_review — never silently dropped and never silently applied.
+(grounding -> duplicate -> conflict).
+
+Clearing those gates does NOT insert the rule. It queues it in `needs_review`
+for a human, together with the exchange that triggered it; a person approves,
+edits, or discards it, and sace_chat.review.approve is the only path from there
+into the pool. The automated gates are therefore a filter on what is worth a
+human's attention, not an admission decision — the one exception being
+duplicates, which are dropped outright because there is nothing to decide about
+a rule we already hold.
 """
 
 import re
-import uuid
 
 from sqlalchemy import text as sql_text
 
-from sace_chat.db import NeedsReviewRow, SessionLocal, check_embedding, insert_chunk
+from sace_chat.db import SessionLocal, check_embedding
 from sace_chat.kb import INTENT_EXEMPLARS
 from sace_chat.manager import _matches_any
-from sace_chat.models import Chunk
+from sace_chat.review import enqueue
 
 # The labels the semantic router can actually return. A learned rule tagged
 # with anything else would be unreachable, so extraction is constrained to
@@ -215,10 +220,16 @@ def _is_conflict(candidate_text: str, existing_text: str) -> bool:
 
 
 class GateResult:
-    def __init__(self, candidate: Candidate, outcome: str, detail: str = ""):
+    def __init__(self, candidate: Candidate, outcome: str, detail: str = "", review_id: str | None = None):
         self.candidate = candidate
-        self.outcome = outcome  # inserted | duplicate-skipped | conflict-needs-review | ungrounded-rejected
+        # queued-for-approval | duplicate-skipped | conflict-needs-review | ungrounded-rejected
+        #
+        # Note there is no "inserted" outcome any more. Clearing the gates now
+        # earns a candidate a place in the human review queue, not a place in
+        # the pool — sace_chat.review.approve is the only path into `chunks`.
+        self.outcome = outcome
         self.detail = detail
+        self.review_id = review_id  # the needs_review row a human will act on
 
 
 def _fetch_pool(conn, table: str, intent: str | None):
@@ -248,12 +259,50 @@ def _fetch_pool(conn, table: str, intent: str | None):
     return conn.execute(sql_text(query), params).fetchall()
 
 
-def run_learning_loop(transcript: str, embedder, conn, table: str = "chunks", llm=None) -> list[GateResult]:
+def _find_trigger(transcript: str, source_line: str) -> tuple[str, str]:
+    """The caller line the candidate came from, and the agent's reply to it.
+
+    This is the reviewer's evidence: "this rule was proposed because the caller
+    said X and Maya answered Y." Derived from the transcript rather than
+    threaded down from the live turn, because the consolidator only ever
+    receives the finished transcript — and `source_line` is already required to
+    be verbatim-present in it by the grounding gate, so it can be located.
+    """
+    if not source_line:
+        return "", ""
+    lines = transcript.splitlines()
+    for i, line in enumerate(lines):
+        if source_line in line:
+            reply = ""
+            for following in lines[i + 1:]:
+                if following.startswith("Maya:"):
+                    reply = following.split(":", 1)[1].strip()
+                    break
+            caller = line.split(":", 1)[1].strip() if ":" in line else line.strip()
+            return caller, reply
+    return "", ""
+
+
+def run_learning_loop(
+    transcript: str,
+    embedder,
+    conn,
+    table: str = "chunks",
+    llm=None,
+    session_id: str | None = None,
+) -> list[GateResult]:
     """Between-calls consolidation. Must only ever run after a call has ended —
     never from engine.step()'s live path.
 
     The caller is responsible for only invoking this post-call (the UI's
     "End call & learn" button, or state.ended).
+
+    **This no longer writes to the pool.** A candidate that clears grounding and
+    the duplicate check is queued in `needs_review` for a human to approve,
+    edit, or discard (see sace_chat.review). Duplicates are still dropped
+    silently — there is nothing for a person to decide about a rule we already
+    hold — and conflicts and ungrounded candidates land in the same queue,
+    tagged with why. Approving is the only way a rule reaches `chunks`.
     """
     if not transcript.strip():
         return []
@@ -264,16 +313,21 @@ def run_learning_loop(transcript: str, embedder, conn, table: str = "chunks", ll
 
     try:
         for candidate in candidates:
+            trigger_message, trigger_reply = _find_trigger(transcript, candidate.source_line)
+
             if not _is_grounded(candidate, transcript):
-                needs_review_row = NeedsReviewRow(
-                    id=str(uuid.uuid4()),
-                    candidate_text=candidate.text,
-                    existing_chunk_id=None,
+                review_id = enqueue(
+                    candidate=candidate,
                     reason="ungrounded",
+                    session_id=session_id,
+                    trigger_message=trigger_message,
+                    trigger_reply=trigger_reply,
+                    session=session,
                 )
-                session.add(needs_review_row)
-                session.commit()
-                results.append(GateResult(candidate, "ungrounded-rejected", "source line not found in transcript"))
+                results.append(GateResult(
+                    candidate, "ungrounded-rejected",
+                    "source line not found in transcript", review_id=review_id,
+                ))
                 continue
 
             candidate_vec = check_embedding(
@@ -299,38 +353,42 @@ def run_learning_loop(transcript: str, embedder, conn, table: str = "chunks", ll
                 continue
 
             if best_sim > SAME_TOPIC_THRESHOLD and _is_conflict(candidate.text, best_match_text):
-                needs_review_row = NeedsReviewRow(
-                    id=str(uuid.uuid4()),
-                    candidate_text=candidate.text,
-                    existing_chunk_id=best_match_id,
+                review_id = enqueue(
+                    candidate=candidate,
                     reason="conflict",
+                    session_id=session_id,
+                    trigger_message=trigger_message,
+                    trigger_reply=trigger_reply,
+                    existing_chunk_id=best_match_id,
+                    session=session,
                 )
-                session.add(needs_review_row)
-                session.commit()
                 results.append(
                     GateResult(
                         candidate,
                         "conflict-needs-review",
                         f"cosine={best_sim:.3f} vs {best_match_id}, contradicts existing rule",
+                        review_id=review_id,
                     )
                 )
                 continue
 
-            new_chunk = Chunk(
-                id=f"learned_{uuid.uuid4().hex[:8]}",
-                title=f"Learned rule ({candidate.intent or 'general'})",
-                text=candidate.text,
-                cue=candidate.retrieval_text,
-                intent=candidate.intent,
-                priority=candidate.priority,
-                source="learned",
-                learned_kind=candidate.learned_kind,
+            # Cleared every automated gate — which now earns a place in the
+            # review queue, not in the pool. The embedding is deliberately NOT
+            # computed here: the human may rewrite the cue, and the cue is what
+            # gets embedded, so embedding now would either be thrown away or
+            # (worse) quietly kept while the text says something else.
+            review_id = enqueue(
+                candidate=candidate,
+                reason="pending",
+                session_id=session_id,
+                trigger_message=trigger_message,
+                trigger_reply=trigger_reply,
+                session=session,
             )
-            # insert_chunk re-embeds and validates before storing, so a
-            # zero-norm or wrong-dimension vector can never reach the pool.
-            insert_chunk(session, new_chunk, embedder, learned_kind=candidate.learned_kind)
-            session.commit()
-            results.append(GateResult(candidate, "inserted", f"id={new_chunk.id}"))
+            results.append(GateResult(
+                candidate, "queued-for-approval",
+                f"review_id={review_id}", review_id=review_id,
+            ))
 
     finally:
         session.close()

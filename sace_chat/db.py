@@ -119,13 +119,53 @@ class CallTranscriptRow(Base):
 
 
 class NeedsReviewRow(Base):
+    """The human review queue: every candidate rule that did NOT go straight
+    into the pool, for any reason, plus the context a person needs to judge it.
+
+    Three reasons land here, and they are one queue on purpose — from the
+    reviewer's point of view "should this rule exist?" is the same question
+    regardless of which gate raised it:
+
+      pending    — cleared grounding and duplicate, but a human must approve
+                   before it is embedded and inserted. This is the default
+                   path for a NEW rule now; nothing is learned silently.
+      conflict   — contradicts an existing rule (`existing_chunk_id`).
+      ungrounded — the source line was not actually in the transcript.
+
+    The candidate's full shape is stored, not just its text, because approving
+    it has to reconstruct a real Chunk: `cue` is what gets embedded (see
+    models.Chunk.cue), so a queue that dropped it would force the human to
+    re-invent the single field that decides whether the rule is ever retrieved.
+
+    `trigger_message` / `trigger_reply` are the exchange that produced the
+    candidate — the reviewer's evidence for whether the rule is warranted.
+    """
+
     __tablename__ = "needs_review"
 
     id = Column(String, primary_key=True)
     candidate_text = Column(Text, nullable=False)
     existing_chunk_id = Column(String, nullable=True)
-    reason = Column(String, nullable=False)  # conflict | ungrounded
+    reason = Column(String, nullable=False)  # pending | conflict | ungrounded
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # The rest of the candidate, so an approval can rebuild the Chunk verbatim.
+    candidate_cue = Column(Text, nullable=False, default="")
+    intent = Column(String, nullable=True)
+    priority = Column(String, nullable=False, default="normal")
+    learned_kind = Column(String, nullable=True)
+    source_line = Column(Text, nullable=False, default="")
+
+    # Provenance: which call, and which exchange in it, produced this.
+    session_id = Column(String, nullable=True, index=True)
+    trigger_message = Column(Text, nullable=False, default="")
+    trigger_reply = Column(Text, nullable=False, default="")
+
+    # Set when a human acts on the row. Rows are deleted on approve/discard,
+    # so these exist for the brief window before deletion and for any future
+    # audit table that wants to copy them.
+    status = Column(String, nullable=False, default="pending")  # pending | approved | discarded
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
 
 
 # A stuck or slow query would otherwise hang a live turn indefinitely — nothing
@@ -197,6 +237,30 @@ def init_db():
         # of reading every row to check whether it qualifies. Same effect for
         # `intent IS NULL` (the general pool) as for a specific label.
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chunks_intent ON chunks (intent)"))
+
+        # needs_review grew from "a log of rejections" into the human approval
+        # queue, so the columns an approval needs to rebuild a Chunk (cue,
+        # intent, priority, learned_kind) and the provenance a reviewer needs
+        # to judge it (session, trigger exchange) are added here. Same
+        # idempotent ADD COLUMN IF NOT EXISTS pattern as chunks above — an
+        # existing database keeps its old conflict/ungrounded rows, which
+        # simply show up with empty cue/trigger fields.
+        for ddl in (
+            "ALTER TABLE needs_review ADD COLUMN IF NOT EXISTS candidate_cue TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE needs_review ADD COLUMN IF NOT EXISTS intent VARCHAR",
+            "ALTER TABLE needs_review ADD COLUMN IF NOT EXISTS priority VARCHAR NOT NULL DEFAULT 'normal'",
+            "ALTER TABLE needs_review ADD COLUMN IF NOT EXISTS learned_kind VARCHAR",
+            "ALTER TABLE needs_review ADD COLUMN IF NOT EXISTS source_line TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE needs_review ADD COLUMN IF NOT EXISTS session_id VARCHAR",
+            "ALTER TABLE needs_review ADD COLUMN IF NOT EXISTS trigger_message TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE needs_review ADD COLUMN IF NOT EXISTS trigger_reply TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE needs_review ADD COLUMN IF NOT EXISTS status VARCHAR NOT NULL DEFAULT 'pending'",
+            "ALTER TABLE needs_review ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ",
+        ):
+            conn.execute(text(ddl))
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_needs_review_status ON needs_review (status)")
+        )
 
 
 def _has_column(conn, column: str) -> bool:

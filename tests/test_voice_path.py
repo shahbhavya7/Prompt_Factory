@@ -190,36 +190,68 @@ async def main():
 
     record("4a. learning loop ran and reported gate outcomes", learned is not None,
            f"{len(learned)} candidate(s): " + ", ".join(x["outcome"] for x in learned))
-    inserted = [x for x in learned if x["outcome"] == "inserted"]
-    norms = _norms([_last_learned_id()]) if inserted else []
-    if inserted:
-        record("4b. inserted rule has embedding norm > 0",
-               bool(norms) and all(n > 0 for n in norms), f"norms={norms}")
+    # Nothing enters the pool from a call any more — clearing the gates queues
+    # the candidate for a human instead (see consolidator.run_learning_loop and
+    # sace_chat.review). So the check is that the pool did NOT grow, and that
+    # anything proposed landed in the review queue with a row id.
+    queued = [x for x in learned if x.get("review_id")]
+    record("4b. nothing was inserted into the pool without a human",
+           after == before, f"pool {before} -> {after}")
+    if learned:
+        record("4b2. every proposed candidate got a review row",
+               len(queued) == len([x for x in learned if x["outcome"] != "duplicate-skipped"]),
+               f"outcomes={[x['outcome'] for x in learned]}")
     else:
-        record("4b. inserted rule has embedding norm > 0", True,
-               "no insert this run (gated as duplicate/conflict) — nothing to check")
+        record("4b2. every proposed candidate got a review row", True,
+               "nothing proposed this run — nothing to queue")
     record("4c. transcript persisted to call_transcripts", _transcript_rows(f"{session_id}-learn") == 1,
            f"pool {before} -> {after} rules")
 
-    # ── VERIFY 5: a learned rule is retrieved in a LATER call ───────────────
-    print("\n[5] a rule learned from a voice call is retrieved in a later voice call")
-    learned_ids = _learned_ids()
-    if not learned_ids:
-        record("5. learned rule retrieved later", False, "no learned rules in the pool")
-    else:
+    # ── VERIFY 5: an APPROVED rule is retrieved in a LATER call ─────────────
+    # The human approval queue changed what this can assert. A rule proposed by
+    # the call above is NOT live — it is queued, and nothing retrieves it until
+    # a person approves it. So the loop is closed here explicitly: queue a
+    # candidate, approve it the way the dashboard would, and only then check a
+    # later call retrieves it. That is the real end-to-end claim now.
+    print("\n[5] a rule a human APPROVED is retrieved in a later voice call")
+    from sace_chat import review
+    from sace_chat.consolidator import Candidate
+
+    approved_id = None
+    try:
+        review_id = review.enqueue(
+            candidate=Candidate(
+                text=(
+                    "When the caller asks whether the clinic has a night pharmacy, say: "
+                    '"Our pharmacy counter is open until 9pm on weeknights."'
+                ),
+                learned_kind="policy",
+                intent=None,
+                source_line="Caller: is the pharmacy open late",
+                cue="is the pharmacy open late, night pharmacy hours, "
+                    "can I pick up a prescription in the evening",
+            ),
+            reason="pending",
+            session_id=f"{session_id}-approve",
+            trigger_message="is the pharmacy open late",
+            trigger_reply="I'm not sure about that.",
+        )
+        outcome = review.approve(review_id, engine.embedder)
+        approved_id = outcome["chunk_id"]
+
         probe = HarnessAgent(engine, f"{session_id}-probe")
         await drive_turn(probe, "hi")
-        p = await drive_turn(
-            probe, "you know what, ring my daughter about this instead of me"
-        )
-        hit = p["governing"] in learned_ids
+        p = await drive_turn(probe, "quick one — can I collect a prescription in the evening")
         record(
-            "5. a learned rule governs a later turn",
-            hit,
-            f"governing={p['governing']} · learned rules in pool={sorted(learned_ids)}\n"
-            f"(a seed rule winning here is correct behaviour when it is the better "
-            f"match or outranks on priority — see retrieve._PRIORITY_RANK)",
+            "5. an approved rule governs a later turn",
+            p["governing"] == approved_id,
+            f"governing={p['governing']} · approved={approved_id}",
         )
+    finally:
+        # This is a test fixture, not something a demo should inherit.
+        if approved_id:
+            with db_engine.begin() as c:
+                c.execute(sql_text("DELETE FROM chunks WHERE id = :i"), {"i": approved_id})
 
     # ── VERIFY 1: latency, to the extent it is measurable here ─────────────
     print("\n[1] latency breakdown per turn (stt/tts absent — no Deepgram in harness)")

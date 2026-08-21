@@ -107,42 +107,49 @@ Why this matters:
   for, we catch it and ask again — this is what keeps the agent from
   going off-script.
 
-## After the call: memory updates itself
+## After the call: memory proposes, a person decides
 
 Once the call ends, we look back at the whole conversation to see if
-anything happened that memory doesn't already cover. If we find something
-new and it's clearly true and doesn't contradict what's already stored, it
-gets written into memory — either added into an existing section (if it's
-about something we already know) or saved as a brand-new section (if it's
-a genuinely new situation). If it's unclear or conflicts with something,
-it's set aside for a person to check — nothing new gets added silently.
+anything happened that memory doesn't already cover. Anything we find is
+written up as a proposed rule and **put in a queue for a person** — it is
+not added to memory yet. Nothing the agent picks up from a call changes how
+it behaves until someone approves it.
+
+When a person has time, they open the queue and see, for each proposed rule:
+the exchange on the call that caused it, the rule itself, and the caller
+phrasings it would be matched by. They can approve it as-is, edit it first
+(reword it, fix what it gets matched by, file it under a different section,
+or create a new section for it), or discard it. Only approving puts it into
+memory.
+
+The automatic checks still run first — was this actually said on the call,
+do we already know it, does it contradict something we hold — but they only
+decide what's worth a person's attention. Duplicates are dropped without
+bothering anyone; everything else waits for a human.
 
 ```mermaid
 flowchart LR
     Call["Call ends"] --> Review["Look back at
     what was said"]
-    Review --> New{"Learned
-    something new
-    and useful?"}
-    New -- "yes, and it's clear" --> Which{"fits an existing
-    section, or is it
-    brand new?"}
-    Which -- "existing" --> Update["update that
-    section"]
-    Which -- "brand new" --> Create["create a new
-    section"]
-    New -- "unclear or
-    conflicting" --> HumanCheck["a person
-    checks it"]
-    Update --> Memory[("memory
+    Review --> New{"Anything worth
+    remembering?"}
+    New -- "we already
+    know it" --> Skip["dropped"]
+    New -- "yes" --> Queue["QUEUED for a person
+    — not in memory yet"]
+    Queue --> Person{"a person reviews it,
+    whenever they have time"}
+    Person -- "approve
+    (as-is or edited)" --> Memory[("memory
     (vector database)")]
-    Create --> Memory
+    Person -- "discard" --> Gone["never stored"]
 ```
 
 This is the loop that makes the agent better over time without anyone
 manually rewriting the prompt: live calls only ever *read* from memory, and
-only this after-the-call step ever *writes* to it — so a call never gets
-confused by something learned from itself, mid-conversation.
+only an approval ever *writes* to it — so a call never gets confused by
+something learned from itself, mid-conversation, and no call can quietly
+change how the agent behaves on the next one.
 
 **For example:** if a caller says they still have their Medi-Cal benefits, the
 agent doesn't just say "great, bye" — it now follows up with a short, natural

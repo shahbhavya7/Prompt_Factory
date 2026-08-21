@@ -50,22 +50,29 @@ flowchart LR
     candidate rules"]
     X --> G1{"grounded in
     transcript?"}
-    G1 -- no --> R1["discarded"]
+    G1 -- no --> Q
     G1 -- yes --> G2{"duplicate of an
     existing rule?"}
-    G2 -- yes --> R2["skipped"]
+    G2 -- yes --> R2["skipped — we
+    already know it"]
     G2 -- no --> G3{"conflicts with an
     existing rule?"}
-    G3 -- yes --> R3["needs_review
-    (a human decides)"]
-    G3 -- no --> INS["inserted into
+    G3 -- yes --> Q
+    G3 -- no --> Q["QUEUED for a person
+    — nothing stored yet"]
+    Q --> H{"a person reviews:
+    approve / edit / discard"}
+    H -- "approve" --> INS["inserted into
     the SAME chunks table"]
+    H -- "discard" --> DROP["never stored"]
     INS -.->|"reachable on the
     next call"| DB[("chunks table")]
 ```
 
-**Why this matters:** nothing the agent "learns" is applied silently — it either
-passes all three checks or lands in a review queue for a person to look at.
+**Why this matters:** the agent cannot change its own behaviour. Everything it
+proposes waits for a person, who can approve it, rewrite it first, or throw it
+away. The automatic checks only decide what's worth a person's attention — they
+don't decide what goes into memory.
 
 ## Watching a live call
 

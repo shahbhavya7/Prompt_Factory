@@ -10,7 +10,9 @@ State-Aware Context Engineering for a scripted outreach agent.
 
 Two front ends now sit on top of the same `Engine`: a Streamlit chat app (`streamlit_app.py`) and a **LiveKit voice agent** (`voice_agent.py`) that answers real calls via Deepgram STT/TTS. Both call into `Engine.build_turn_context` / `Engine.step` / `Engine.prepare_reply`, so retrieval, assembly and validation are one code path regardless of which front end is talking. The voice agent also runs a small **WebSocket spectator server**, broadcasting what it is doing turn-by-turn to a **live dashboard** (`frontend/`) — see [§7](#7-the-live-dashboard-voice_agentpy--frontend) for the whole mechanism.
 
-On top of the live path sits a **post-call learning loop**: after a call ends, an LLM proposes new rules from the transcript, and each candidate must pass three independent verification gates — **grounding** (is this actually attested in the transcript?), **duplicate** (do we already know this?), and **conflict** (does this contradict a rule we already hold?) — before it is embedded and inserted into the same pool the live path reads from. A candidate that fails grounding or conflict is written to a `needs_review` table for a human, never silently applied and never silently dropped. That gate stack is what makes "the agent learns from its calls" a defensible claim rather than a dangerous one.
+On top of the live path sits a **post-call learning loop**: after a call ends, an LLM proposes new rules from the transcript, and each candidate must pass three independent verification gates — **grounding** (is this actually attested in the transcript?), **duplicate** (do we already know this?), and **conflict** (does this contradict a rule we already hold?).
+
+**Clearing those gates does not store the rule.** A candidate that survives them is queued in `needs_review` for a person, together with the exchange that triggered it; a human approves it (optionally rewriting its text, its cue, its intent, or its priority), or discards it. `sace_chat.review.approve` is the only path from that queue into the pool. Duplicates are still dropped outright — there is nothing for a person to decide about a rule we already hold — and conflicts and ungrounded candidates land in the same queue, tagged with why. So the automated gates are a filter on *what deserves a human's attention*, not an admission decision, and the honest claim is "the agent proposes; a person decides", which is stronger than "the agent learns from its calls" was. See [§8](#8-the-human-approval-queue).
 
 ---
 
@@ -23,7 +25,7 @@ Lane A is the live turn. Lane B is post-call consolidation. The **thick coloured
 %% direction is what puts Lane A first and the shared table between the lanes.
 flowchart RL
     DB[("chunks<br>Postgres + pgvector<br>39 seed + N learned")]
-    REVIEW[("needs_review<br>human queue")]
+    REVIEW[("needs_review<br>human approval queue<br>pending / conflict / ungrounded")]
 
     subgraph LANE_A["LANE A — live turn: one LLM call, ~1.0-1.3k tokens"]
         direction TB
@@ -53,8 +55,11 @@ flowchart RL
         B4{"GATE 1 — grounding<br>is source_line verbatim<br>in the transcript ?"}
         B5{"GATE 2 — duplicate<br>cue cosine vs pool, SAME SECTION ONLY<br>(same intent, or the general pool)<br>> 0.72 ?"}
         B6{"GATE 3 — conflict<br>cosine > 0.6 AND numbers differ<br>or assert/deny flip ?"}
-        B7["insert_chunk<br>embed the CUE, validate the vector,<br>source = learned"]
+        B7["review.enqueue reason=pending<br>NOT in the pool — waiting on a person"]
         B8["skipped as already known"]
+        B9{"HUMAN reviews the queue<br>whenever they have time"}
+        B10["review.approve<br>insert_chunk: embeds the (possibly<br>human-rewritten) CUE, source = learned"]
+        B11["discarded — never stored"]
     end
 
     A1 --> A2
@@ -84,13 +89,17 @@ flowchart RL
     B6 -->|"contradicts existing rule"| REVIEW
     B6 -->|"clean"| B7
     A16 -->|"call over"| B1
-    B7 ==>|"writes"| DB
+    B7 --> REVIEW
+    REVIEW --> B9
+    B9 -->|"approve, with edits"| B10
+    B9 -->|"discard"| B11
+    B10 ==>|"writes — the ONLY path into the pool"| DB
     DB ==>|"read every turn — THE LOOP CLOSES"| A5
     DB ==>|"read every turn"| A6
 
-    linkStyle 27 stroke:#e0479e,stroke-width:4px
-    linkStyle 28 stroke:#e0479e,stroke-width:4px
-    linkStyle 29 stroke:#e0479e,stroke-width:4px
+    linkStyle 31 stroke:#e0479e,stroke-width:4px
+    linkStyle 32 stroke:#e0479e,stroke-width:4px
+    linkStyle 33 stroke:#e0479e,stroke-width:4px
 ```
 
 The two lanes share exactly one thing: the `chunks` table. Lane B never calls into Lane A, and Lane A never calls into Lane B — the only coupling is data. That is deliberate: it is what keeps learning off the latency-critical path.
@@ -573,10 +582,14 @@ Only candidates that are **related but not duplicates** (cosine between 0.6 and 
 
 | Outcome | Pool | `needs_review` | Live behaviour changes? |
 |---|---|---|---|
-| `inserted` | new row, embedded, `source='learned'` | — | Yes, from the next turn on |
+| `queued-for-approval` | unchanged | row, `reason='pending'` | **No** — not until a human approves |
 | `duplicate-skipped` | unchanged | — | No |
 | `conflict-needs-review` | unchanged | row with `existing_chunk_id` | No, pending a human |
 | `ungrounded-rejected` | unchanged | row, `existing_chunk_id=NULL` | No |
+| *(human approves via `review.approve`)* | new row, embedded, `source='learned'` | row deleted | Yes, from the next call on |
+| *(human discards via `review.discard`)* | unchanged | row deleted | No, ever |
+
+Note there is no longer an `inserted` outcome from the learning loop at all: **no call can change the agent's behaviour on its own.** The only writer into `chunks` from learned material is a human pressing approve.
 
 A further structural safety property sits underneath the gates: **a learned rule cannot displace a `critical` seed rule for the same intent**, because `_fetch_by_intent` ranks priority above distance. Even a learned rule that clears all three gates cannot cancel a compliance-critical close.
 
@@ -687,3 +700,80 @@ The dashboard is **watch-only** except for the one `end_call` message. It cannot
 ### Relationship to the older chat demo
 
 `api/` (a FastAPI chat-demo backend) and the Streamlit `streamlit_app.py` predate this dashboard and are **not deleted** — `streamlit_app.py` in particular remains a legitimate second front end onto the same `Engine`, useful for text-only testing without a LiveKit room. But neither is the primary interface any more: `voice_agent.py`, answering real calls, with this dashboard watching it, is. Documentation and demos should be read with that in mind — a description of "the UI" that only covers Streamlit is describing the secondary path.
+
+---
+
+## 8. The human approval queue
+
+Sections 1–7 describe a system that could write its own policy. This section describes the gate that stops it: **nothing the agent proposes changes how it behaves until a person approves it.** The automated gates of [§5](#5-the-three-verification-gates) decide what is worth a human's attention; a human decides what enters memory.
+
+### Why the gates were not enough
+
+[§6](#6-honest-limitations) records the failure that motivated this: an extraction run produced a rule instructing Maya to discuss **address changes**, which `STABLE_CORE` explicitly forbids her from raising. It was grounded (the caller really did mention it), novel, and contradicted nothing — so it passed all three gates cleanly and went live. The gates check *attestation*, *novelty*, and *contradiction*. They do not check *permissibility*, *usefulness*, or *phrasing*, and no cosine threshold can. Those are judgement calls, so they now go to someone with judgement.
+
+The pool this was built against had also accumulated real near-duplicate drift — five separate learned rules about a caller expressing frustration, four about a caller questioning the call's legitimacy — each individually past the duplicate bar, collectively a mess competing for the same turns. A human reviewing them as they arrive is the cheapest place to catch that.
+
+### Storage
+
+The queue is the `needs_review` table, not an in-process list. That is the whole point: review happens whenever a person has time, which is normally with the agent shut down and no call in flight. A queue that lived in the agent's memory would be empty at exactly the moment someone sat down to work through it.
+
+`needs_review` therefore grew from a log of rejections into the full candidate: `candidate_text`, `candidate_cue`, `intent`, `priority`, `learned_kind`, `source_line` — everything `review.approve` needs to rebuild a real `Chunk` — plus `session_id`, `trigger_message` and `trigger_reply`, the exchange that caused the proposal. **`candidate_cue` is the load-bearing addition:** the cue is what gets embedded ([§4](#4-key-design-decisions)), so a queue storing only the rule text would force the reviewer to re-invent the one field that decides whether the rule is ever retrieved. Three `reason` values share the table — `pending`, `conflict`, `ungrounded` — because from the reviewer's seat "should this rule exist?" is one question regardless of which gate raised it.
+
+Migration is the same idempotent `ADD COLUMN IF NOT EXISTS` pattern `chunks` uses (`db.init_db`), so an existing database keeps its old conflict/ungrounded rows; they simply show up with empty cue and trigger fields.
+
+### `sace_chat/review.py`
+
+| Signature | Behaviour | Reads / writes |
+|---|---|---|
+| `enqueue(*, candidate, reason, session_id, trigger_message, trigger_reply, existing_chunk_id, session)` | Queue one candidate. Takes the whole `Candidate` rather than field-by-field, so nothing needed to rebuild a `Chunk` is lost. | writes `needs_review` |
+| `list_pending(limit=200)` | Everything awaiting a human, **oldest first** — review order is arrival order, so a rule proposed three calls ago is not buried under newer ones. | reads `needs_review` |
+| `pending_count()` | Queue depth, for the dashboard badge. | reads `needs_review` |
+| `known_intents()` | The 18 routable labels **plus any intent already in use on a stored rule**, so a custom intent approved earlier is offered as an existing choice rather than retyped — a near-miss spelling would silently split one section into two. | reads `chunks` |
+| `approve(review_id, embedder, *, text, cue, intent, priority, learned_kind, set_intent)` | Insert the rule, with the human's edits applied, via the same `insert_chunk` path `load_kb.py` uses. Deletes the queue row. | writes `chunks`, deletes from `needs_review` |
+| `discard(review_id)` | Drop the row. The rule never enters the pool. | deletes from `needs_review` |
+
+Two details in `approve` that are easy to get wrong:
+
+- **`set_intent` exists because `intent=None` is a meaningful choice.** A general rule (reachable by similarity alone) is exactly `intent=None`, so a null cannot double as "leave it as proposed". The UI sends `set_intent=true` whenever the reviewer touched the control at all.
+- **A custom intent is accepted, not rejected — but warned about.** `IntentRouter` can only return labels that have exemplars in `kb.INTENT_EXEMPLARS`, so a rule tagged with a brand-new label is stored and then never retrieved until exemplars are added for it. Blocking the human's choice would be wrong; silently rewriting it would be worse. `approve` returns a `warning` string and the UI shows it verbatim. This was verified: a rule approved under a new `parking_q` intent stored fine, and a caller asking about parking still routed to `clinic_location` instead — exactly as the warning said.
+
+### The API
+
+The review endpoints live on `api/main.py` (the FastAPI app), **not** on `voice_agent.py`'s spectator websocket. The websocket only exists while a call is running; the queue has to be openable when nothing is.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /review/pending` | `{pending: [...], intents: [...], count: N}` |
+| `POST /review/{id}/approve` | `{chunk_id, intent, priority, learned_kind, cue, text, warning}` |
+| `POST /review/{id}/discard` | `{discarded, text}` |
+
+Both mutating endpoints 400 on an unknown id or an already-decided row, rather than silently no-op'ing.
+
+### The UI — `frontend/` "Pending review" tab
+
+The dashboard is two jobs now, so it has two tabs; the review tab carries a badge with the queue depth. The count comes from `GET /review/pending` at mount, and is then refreshed from the `learning_done` websocket frame, which now carries `pending_count` — so the badge is correct after a call whether or not the tab has ever been opened.
+
+Each `ReviewCard` reads top-to-bottom as the reviewer's actual question:
+
+1. **Why it is here** — a chip and a coloured left edge per `reason`, with a plain-language explanation of what that reason means (a conflict card says outright that approving will not replace the rule it conflicts with; both would go live and compete).
+2. **What happened on the call** — the caller line and Maya's reply. The evidence.
+3. **The rule** — what Maya should do, shown to the model.
+4. **Matched by** — the cue, **shown by default rather than hidden behind the edit toggle**, because a bad cue is invisible in the rule text and produces a rule that is stored and never found.
+5. **Approve / Edit / Discard.** Edit reveals the section (intent) and priority controls, including `+ new section…`.
+
+Decisions are optimistic — the row leaves the list immediately so a long queue visibly drains — and a failure restores it with the error shown. After each decision the list refetches, so an intent just created appears as a choice on the remaining cards.
+
+### What this changes about the claims elsewhere in this document
+
+- [§1](#1-summary)'s "the agent learns from its calls" is now "the agent proposes; a person decides". Strictly weaker autonomy, strictly stronger safety.
+- The `learned_kind` / `source='learned'` provenance is unchanged: an approved rule is indistinguishable in shape from one the old auto-insert path would have written, so retrieval, priority ranking, and `load_kb.py`'s selective delete all behave exactly as before.
+- **`_fetch_by_intent` ranking still protects compliance-critical rules.** A human can approve a `critical` learned rule, but priority ranks above distance within an intent, so an approved rule still cannot cancel a `critical` seed rule for the same intent.
+- The scope gap in [§6](#6-honest-limitations) — gates check attestation, not permissibility — is now covered by a person rather than by a fourth gate. A `STABLE_CORE`-prohibition gate is still the right thing to build; it would reduce what reaches the queue, not replace the queue.
+
+### Remaining limitations
+
+- **No audit trail of decisions.** Rows are deleted on approve/discard. The `status`/`reviewed_at` columns exist and are set, but the row is removed in the same transaction, so there is no "who approved what, when" history. An `approved`/`discarded` archive table is the obvious next step.
+- **No authentication.** Any client that can reach the API can approve rules. Fine for a single-operator demo on localhost; not fine the moment this is exposed.
+- **Editing a queued rule does not re-run the gates.** A human can rewrite a candidate into something that *would* have been caught as a duplicate or a conflict, and it will be inserted anyway. That is deliberate — the human is meant to outrank the gates — but it means the near-duplicate drift the gates defend against can still be introduced by hand.
+- **Approving a conflict leaves both rules live.** There is still no update or supersede path; the card says so, but the reviewer's only options are add-anyway or discard. Editing the *existing* rule is not possible from this queue.
+- **The queue is unbounded and unpaginated** past `limit=200`. A long unattended stretch of calls will accumulate rows faster than anyone drains them, and near-duplicate proposals across calls are not collapsed in the queue itself.

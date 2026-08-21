@@ -458,13 +458,17 @@ class SaceVoiceAgent(Agent):
         try:
             with db_engine.connect() as conn:
                 gate_results = run_learning_loop(
-                    transcript, self.engine.embedder, conn, llm=get_llm()
+                    transcript, self.engine.embedder, conn, llm=get_llm(),
+                    session_id=self.session_id,
                 )
             for r in gate_results:
                 entry = {
                     "outcome": r.outcome, "detail": r.detail,
                     "text": r.candidate.text, "intent": r.candidate.intent,
                     "learned_kind": r.candidate.learned_kind,
+                    # Which queue row a human will act on. Nothing here has
+                    # entered the pool — see consolidator.run_learning_loop.
+                    "review_id": r.review_id,
                 }
                 results.append(entry)
                 print(f"[learn] {r.outcome:<22} intent={str(r.candidate.intent):<18} {r.detail}")
@@ -483,10 +487,24 @@ class SaceVoiceAgent(Agent):
             turn_count=self.turn_index, learning_results=results,
         )
         print(f"[learn] transcript stored ({self.turn_index} turns, {len(results)} candidates)")
+
+        # How many rules are now waiting on a person — including any left over
+        # from earlier calls, which is why it is read from the queue rather
+        # than counted from `results`. Lets the dashboard show a live pending
+        # badge without polling the HTTP API while a call is in progress.
+        try:
+            from sace_chat.review import pending_count
+
+            queued = pending_count()
+            print(f"[learn] {queued} rule(s) awaiting human approval")
+        except Exception as exc:
+            print(f"[learn] pending_count failed: {type(exc).__name__}: {exc}")
+            queued = None
+
         # Signals the stream of "learned" events is complete — without this
         # the dashboard has no way to tell "still reviewing" apart from
         # "reviewed, and there was nothing to learn."
-        broadcast({"type": "learning_done", "results": results})
+        broadcast({"type": "learning_done", "results": results, "pending_count": queued})
         return results
 
 

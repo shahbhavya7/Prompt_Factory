@@ -102,3 +102,21 @@ class EndCallResponse(BaseModel):
 class CallStatusResponse(BaseModel):
     call_state: CallStateModel
     turn_count: int
+
+
+class ApproveRequest(BaseModel):
+    """A human's approval of one queued rule, carrying any edits they made.
+
+    Every field is optional: an unset field means "keep what the extractor
+    proposed". `set_intent` exists because `intent=None` is itself a meaningful
+    choice (a general rule reachable by similarity alone), so a null cannot
+    double as "unchanged" — the UI sends set_intent=true whenever the reviewer
+    touched the intent control at all.
+    """
+
+    text: str | None = None
+    cue: str | None = None
+    intent: str | None = None
+    priority: str | None = None
+    learned_kind: str | None = None
+    set_intent: bool = False

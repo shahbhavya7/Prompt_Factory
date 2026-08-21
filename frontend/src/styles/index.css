@@ -471,3 +471,397 @@ button {
   text-align: center;
   padding: var(--space-2);
 }
+
+/* ── tabs ─────────────────────────────────────────────────────────────────
+   The dashboard is two jobs now: watching a call, and reviewing what calls
+   proposed. The second has to be reachable with no call running — which is
+   the normal case, since review happens whenever a person has time. */
+.tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-4);
+}
+
+.tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 10px 16px;
+  font-size: 0.9rem;
+  font-weight: 550;
+  color: var(--color-ink-soft);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.tab:hover {
+  color: var(--color-ink);
+}
+
+.tab--active {
+  color: var(--color-accent-ink);
+  border-bottom-color: var(--color-accent);
+}
+
+.tab__badge {
+  min-width: 20px;
+  padding: 1px 7px;
+  font-size: 0.74rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  background: var(--color-accent);
+  border-radius: 999px;
+}
+
+/* ── review queue ─────────────────────────────────────────────────────── */
+.review-queue {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.review-queue__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.review-queue__title {
+  font-size: 1.3rem;
+  margin-bottom: var(--space-1);
+}
+
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.review-empty {
+  padding: var(--space-5) var(--space-4);
+  text-align: center;
+  background: var(--color-surface);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.review-empty__title {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  color: var(--color-ink);
+  margin: 0 0 var(--space-1);
+}
+
+.review-empty__body {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--color-ink-soft);
+}
+
+.review-flash {
+  position: relative;
+  padding: 11px 34px 11px 14px;
+  font-size: 0.88rem;
+  color: var(--color-accent-ink);
+  background: var(--color-accent-soft);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+}
+
+.review-flash--bad {
+  color: var(--color-bad);
+  background: var(--color-bad-soft);
+  border-color: var(--color-bad);
+}
+
+.review-flash__hint {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.review-flash__close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  padding: 0 6px;
+  font-size: 1.1rem;
+  line-height: 1.4;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.review-flash__close:hover {
+  background: rgba(0, 0, 0, 0.07);
+}
+
+/* ── one queued rule ──────────────────────────────────────────────────── */
+.review-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  /* The reason a rule is here is the first thing to know about it, so it is
+     carried as a colour edge rather than only as a chip. */
+  border-left: 3px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.15s ease;
+}
+
+.review-card:hover {
+  box-shadow: var(--shadow-md);
+}
+
+.review-card--warn {
+  border-left-color: var(--color-warn);
+}
+
+.review-card--bad {
+  border-left-color: var(--color-bad);
+}
+
+.review-card--neutral {
+  border-left-color: var(--color-accent);
+}
+
+.review-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.review-card__time {
+  margin-left: auto;
+  font-size: 0.76rem;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.review-card__blurb {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--color-ink-soft);
+}
+
+.review-chip {
+  padding: 3px 10px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+  color: var(--color-ink-soft);
+}
+
+.review-chip--neutral {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-ink);
+}
+
+.review-chip--warn {
+  background: var(--color-warn-soft);
+  color: var(--color-warn);
+}
+
+.review-chip--bad {
+  background: var(--color-bad-soft);
+  color: var(--color-bad);
+}
+
+.review-chip--quiet {
+  font-weight: 500;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+/* The exchange that caused the rule — the reviewer's evidence. */
+.review-trigger {
+  padding: var(--space-3);
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-sm);
+}
+
+.review-trigger__label {
+  display: block;
+  margin-bottom: var(--space-2);
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+}
+
+.review-trigger__line {
+  display: flex;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-1);
+  font-size: 0.89rem;
+  line-height: 1.5;
+  color: var(--color-ink);
+}
+
+.review-trigger__line:last-child {
+  margin-bottom: 0;
+}
+
+.review-trigger__who {
+  flex: 0 0 46px;
+  font-size: 0.72rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-ink-faint);
+  padding-top: 2px;
+}
+
+.review-trigger__who--maya {
+  color: var(--color-accent);
+}
+
+.review-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.review-field--inline {
+  flex: 1 1 200px;
+}
+
+.review-row {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.review-field__label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+}
+
+.review-field__hint {
+  font-size: 0.76rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--color-ink-faint);
+}
+
+.review-field__value {
+  margin: 0;
+  font-size: 0.94rem;
+  line-height: 1.55;
+  color: var(--color-ink);
+}
+
+.review-field__value--mono,
+.review-input--mono {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--color-ink-soft);
+}
+
+.review-input {
+  width: 100%;
+  padding: 10px 12px;
+  font-family: var(--font-body);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: var(--color-ink);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  resize: vertical;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.review-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+}
+
+.review-input--slim {
+  margin-top: var(--space-2);
+  padding: 7px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.review-select {
+  padding: 8px 10px;
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  color: var(--color-ink);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.review-select:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+}
+
+.review-warn {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: var(--color-warn);
+  background: var(--color-warn-soft);
+  border-radius: var(--radius-sm);
+}
+
+.review-warn code {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.review-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding-top: var(--space-1);
+}
+
+.btn-danger {
+  margin-left: auto;
+  color: var(--color-bad);
+  border-color: transparent;
+  background: transparent;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--color-bad-soft);
+  border-color: var(--color-bad);
+}
+
+.learning-panel__cta {
+  align-self: flex-start;
+  margin-top: var(--space-3);
+}

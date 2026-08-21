@@ -468,6 +468,10 @@ with right:
                 st.caption("No candidate rules extracted — nothing new in this call.")
             else:
                 icon = {
+                    # Clearing the gates queues a rule for human approval; it
+                    # does not store it. "inserted" is kept for transcripts
+                    # recorded before the approval queue existed.
+                    "queued-for-approval": "⏳",
                     "inserted": "✅",
                     "duplicate-skipped": "♻️",
                     "conflict-needs-review": "⚠️",
@@ -481,3 +485,18 @@ with right:
                     st.caption(row["text"])
                     if row["detail"]:
                         st.caption(f"↳ {row['detail']}")
+
+                # Nothing above is live yet — the approval queue is in the
+                # React dashboard, which is the one place rules are approved.
+                try:
+                    from sace_chat.review import pending_count
+
+                    waiting = pending_count()
+                except Exception:
+                    waiting = None
+                if waiting:
+                    st.info(
+                        f"{waiting} rule(s) awaiting approval. Nothing is stored until "
+                        "approved — review them in the dashboard's **Pending review** tab "
+                        "(`cd frontend && npm run dev`, with `./run.sh demo` running)."
+                    )
