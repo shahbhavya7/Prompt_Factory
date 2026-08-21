@@ -1,0 +1,686 @@
+<title>SACE Architecture</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Work+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+  :root {
+    --bg: #f6f5f2;
+    --bg-raised: #ffffff;
+    --ink: #1d1e1c;
+    --ink-soft: #4b4c48;
+    --ink-faint: #8a8b85;
+    --line: #dcdad3;
+    --line-strong: #c4c1b7;
+    --accent: #a8722f;
+    --accent-soft: #efe2cd;
+    --accent-ink: #6e4a1c;
+    --loop: #2f6d68;
+    --loop-soft: #dbeae7;
+    --loop-ink: #1c4844;
+    --danger: #a13e3e;
+    --danger-soft: #f3ddd8;
+    --code-bg: #eeece5;
+    --shadow: 0 1px 2px rgba(30,28,20,0.06), 0 4px 14px rgba(30,28,20,0.05);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #15161a;
+      --bg-raised: #1c1e22;
+      --ink: #ecebe6;
+      --ink-soft: #b7b6ae;
+      --ink-faint: #75766f;
+      --line: #33342f;
+      --line-strong: #46473f;
+      --accent: #e0a75e;
+      --accent-soft: #3a2e1a;
+      --accent-ink: #f0c184;
+      --loop: #6fbdb5;
+      --loop-soft: #17302d;
+      --loop-ink: #9cd8d0;
+      --danger: #d98787;
+      --danger-soft: #3a2320;
+      --code-bg: #202220;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #15161a;
+    --bg-raised: #1c1e22;
+    --ink: #ecebe6;
+    --ink-soft: #b7b6ae;
+    --ink-faint: #75766f;
+    --line: #33342f;
+    --line-strong: #46473f;
+    --accent: #e0a75e;
+    --accent-soft: #3a2e1a;
+    --accent-ink: #f0c184;
+    --loop: #6fbdb5;
+    --loop-soft: #17302d;
+    --loop-ink: #9cd8d0;
+    --danger: #d98787;
+    --danger-soft: #3a2320;
+    --code-bg: #202220;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35);
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Work Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+  }
+  ::selection { background: var(--accent-soft); }
+
+  .page {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 4rem 1.5rem 6rem;
+  }
+
+  h1, h2, h3 {
+    font-family: "Newsreader", ui-serif, Georgia, serif;
+    font-weight: 600;
+    text-wrap: balance;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 0.9rem;
+  }
+
+  h1 {
+    font-size: clamp(2.1rem, 4.5vw, 2.85rem);
+    margin: 0 0 0.5rem;
+    line-height: 1.1;
+  }
+
+  .dek {
+    font-size: 1.08rem;
+    color: var(--ink-soft);
+    max-width: 60ch;
+    margin: 0 0 2.6rem;
+  }
+
+  header.masthead {
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 2.4rem;
+    margin-bottom: 3rem;
+  }
+
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .stat {
+    background: var(--bg-raised);
+    padding: 0.9rem 1.1rem;
+  }
+  .stat .n {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 1.35rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent-ink);
+    display: block;
+  }
+  .stat .l {
+    font-size: 0.76rem;
+    color: var(--ink-faint);
+    letter-spacing: 0.03em;
+  }
+
+  section { margin: 3.6rem 0; }
+  section > h2 {
+    font-size: 1.5rem;
+    margin: 0 0 0.3rem;
+  }
+  section > .section-note {
+    color: var(--ink-soft);
+    max-width: 68ch;
+    margin: 0 0 1.6rem;
+    font-size: 0.98rem;
+  }
+
+  p { max-width: 68ch; }
+  p.tight { margin: 0.6rem 0; }
+
+  code, .mono {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.86em;
+    background: var(--code-bg);
+    padding: 0.05em 0.35em;
+    border-radius: 4px;
+    color: var(--ink);
+  }
+  pre {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.82rem;
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    line-height: 1.55;
+  }
+
+  figure {
+    margin: 1.6rem 0;
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 1.4rem 1.2rem 1.1rem;
+    box-shadow: var(--shadow);
+  }
+  figure.wide {
+    margin-left: calc(50% - 50vw + 1.5rem);
+    margin-right: calc(50% - 50vw + 1.5rem);
+    max-width: none;
+    padding: 1.8rem clamp(1rem, 4vw, 3rem) 1.3rem;
+  }
+  .diagram-scroll {
+    overflow-x: auto;
+  }
+  .diagram-scroll svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    min-width: 640px;
+  }
+  figcaption {
+    font-size: 0.86rem;
+    color: var(--ink-faint);
+    margin-top: 0.9rem;
+    padding-top: 0.9rem;
+    border-top: 1px dashed var(--line);
+    max-width: 74ch;
+  }
+
+  svg text { fill: currentColor; }
+  .lbl-accent { fill: var(--accent-ink); }
+  .lbl-loop { fill: var(--loop-ink); }
+  .stroke-accent { stroke: var(--accent); }
+  .stroke-loop { stroke: var(--loop); }
+  .fill-accent { fill: var(--accent-soft); stroke: var(--accent); }
+  .fill-loop { fill: var(--loop-soft); stroke: var(--loop); }
+  .fill-neutral { fill: var(--bg-raised); stroke: var(--line-strong); }
+  .fill-danger { fill: var(--danger-soft); stroke: var(--danger); }
+
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.6rem;
+  }
+  @media (max-width: 760px) {
+    .two-col { grid-template-columns: 1fr; }
+    figure.wide { margin-left: -1.2rem; margin-right: -1.2rem; border-radius: 0; border-left: none; border-right: none; }
+  }
+
+  .card {
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 1.2rem 1.3rem;
+  }
+  .card h3 {
+    font-size: 1.05rem;
+    margin: 0 0 0.5rem;
+  }
+  .card p { margin: 0; font-size: 0.94rem; color: var(--ink-soft); }
+
+  .rule-list {
+    display: grid;
+    gap: 0.5rem;
+    margin: 1rem 0;
+  }
+  .rule-row {
+    display: grid;
+    grid-template-columns: minmax(140px,180px) 1fr;
+    gap: 0.9rem;
+    align-items: baseline;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 0.92rem;
+  }
+  .rule-row:last-child { border-bottom: none; }
+  .rule-row .id { font-family: "IBM Plex Mono", monospace; font-size: 0.82rem; color: var(--accent-ink); }
+  .rule-row .desc { color: var(--ink-soft); }
+
+  .pill {
+    display: inline-block;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.03em;
+    padding: 0.14em 0.55em;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+  }
+  .pill.live { color: var(--accent-ink); background: var(--accent-soft); border-color: var(--accent); }
+  .pill.loop { color: var(--loop-ink); background: var(--loop-soft); border-color: var(--loop); }
+
+  footer {
+    margin-top: 5rem;
+    padding-top: 1.6rem;
+    border-top: 1px solid var(--line);
+    color: var(--ink-faint);
+    font-size: 0.84rem;
+  }
+  footer code { background: none; padding: 0; }
+</style>
+
+<div class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">Internal reference · main branch</p>
+    <h1>SACE — the prompt-memory engine behind Maya</h1>
+    <p class="dek">
+      Semantic Adaptive Context Engine: a flat pool of retrievable rules replaces one
+      monolithic system prompt. Every turn asks memory which rule governs, sends only
+      that rule to the model, and checks the reply actually came from it. This page
+      draws the mechanism end to end — retrieval, generation, grounding, and the
+      offline loop that grows the pool from real calls.
+    </p>
+    <div class="stat-row">
+      <div class="stat"><span class="n">33</span><span class="l">seed rules, flat pool, no stages</span></div>
+      <div class="stat"><span class="n">2</span><span class="l">entry points, one engine</span></div>
+      <div class="stat"><span class="n">5,782 → 965–1,296</span><span class="l">tokens/turn vs. monolith (78–83% smaller)</span></div>
+      <div class="stat"><span class="n">0.45</span><span class="l">grounding cosine floor</span></div>
+    </div>
+  </header>
+
+  <section id="overview">
+    <h2>The whole loop, in one picture</h2>
+    <p class="section-note">
+      Two front ends — a voice call and a Streamlit chat — both hand the same three
+      inputs to one <code>Engine</code>: the caller's state, the conversation history,
+      and this turn's message. Everything downstream is shared code, so a voice caller
+      and a chat tester are governed by identical logic.
+    </p>
+
+    <figure class="wide">
+      <div class="diagram-scroll">
+        <svg viewBox="0 0 1180 620" role="img" aria-label="End to end architecture: voice and chat front ends both call Engine.build_turn_context and Engine.step, which retrieve a governing rule from the pgvector pool, assemble a prompt, get one structured decision from the LLM, validate the reply against the same rule, apply it to call state, and log the turn. A separate offline loop reads finished transcripts and writes new learned rules back into the same pool.">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+            <marker id="arrowLoop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="var(--loop)"/>
+            </marker>
+          </defs>
+
+          <!-- Front ends -->
+          <rect x="30" y="30" width="200" height="56" rx="10" class="fill-neutral" stroke-width="1.3"/>
+          <text x="130" y="53" text-anchor="middle" font-size="13" font-weight="600">voice_agent.py</text>
+          <text x="130" y="70" text-anchor="middle" font-size="11" fill="var(--ink-faint)">LiveKit + Deepgram call</text>
+
+          <rect x="30" y="106" width="200" height="56" rx="10" class="fill-neutral" stroke-width="1.3"/>
+          <text x="130" y="129" text-anchor="middle" font-size="13" font-weight="600">streamlit_app.py</text>
+          <text x="130" y="146" text-anchor="middle" font-size="11" fill="var(--ink-faint)">chat tester / dashboard</text>
+
+          <!-- into Engine -->
+          <line x1="230" y1="58" x2="300" y2="90" stroke="currentColor" stroke-width="1.3" marker-end="url(#arrow)"/>
+          <line x1="230" y1="134" x2="300" y2="102" stroke="currentColor" stroke-width="1.3" marker-end="url(#arrow)"/>
+          <text x="248" y="82" font-size="10.5" fill="var(--ink-faint)">state, history, message</text>
+
+          <!-- Engine box -->
+          <rect x="300" y="30" width="260" height="132" rx="12" class="fill-accent" stroke-width="1.6"/>
+          <text x="430" y="54" text-anchor="middle" font-size="13.5" font-weight="600" class="lbl-accent">Engine</text>
+          <text x="430" y="70" text-anchor="middle" font-size="10.5" fill="var(--ink-faint)">engine.py</text>
+          <line x1="316" y1="80" x2="544" y2="80" stroke="var(--accent)" stroke-width="1" opacity="0.5"/>
+          <text x="430" y="98" text-anchor="middle" font-size="11">build_turn_context()</text>
+          <text x="430" y="116" text-anchor="middle" font-size="11">→ retrieve + assemble</text>
+          <text x="430" y="138" text-anchor="middle" font-size="11">prepare_reply() / step()</text>
+          <text x="430" y="154" text-anchor="middle" font-size="11">→ decide + validate + apply</text>
+
+          <!-- Engine to retrieval -->
+          <line x1="560" y1="70" x2="640" y2="70" stroke="currentColor" stroke-width="1.3" marker-end="url(#arrow)"/>
+          <text x="600" y="60" text-anchor="middle" font-size="10">1 query</text>
+
+          <!-- Retrieval box -->
+          <rect x="640" y="30" width="230" height="90" rx="12" class="fill-neutral" stroke-width="1.3"/>
+          <text x="755" y="53" text-anchor="middle" font-size="13" font-weight="600">retrieve()</text>
+          <text x="755" y="70" text-anchor="middle" font-size="10.5" fill="var(--ink-faint)">retrieve.py — intent + pool</text>
+          <text x="755" y="88" text-anchor="middle" font-size="10.5" fill="var(--ink-faint)">cosine over rule CUEs</text>
+          <text x="755" y="104" text-anchor="middle" font-size="10.5" fill="var(--ink-faint)">→ governing + reference</text>
+
+          <!-- Retrieval to DB -->
+          <line x1="870" y1="65" x2="950" y2="65" stroke="currentColor" stroke-width="1.3" marker-end="url(#arrow)"/>
+          <rect x="950" y="30" width="200" height="70" rx="12" class="fill-neutral" stroke-width="1.3"/>
+          <text x="1050" y="55" text-anchor="middle" font-size="12.5" font-weight="600">Postgres + pgvector</text>
+          <text x="1050" y="72" text-anchor="middle" font-size="10.5" fill="var(--ink-faint)">table: chunks (the pool)</text>
+          <text x="1050" y="87" text-anchor="middle" font-size="10.5" fill="var(--ink-faint)">seed + learned rules</text>
+
+          <!-- Engine down to LLM decide -->
+          <line x1="430" y1="162" x2="430" y2="210" stroke="currentColor" stroke-width="1.3" marker-end="url(#arrow)"/>
+          <text x="470" y="192" font-size="10.5" fill="var(--ink-faint)">stable core + 1 rule</text>
+
+          <rect x="300" y="210" width="260" height="66" rx="12" class="fill-neutral" stroke-width="1.3"/>
+          <text x="430" y="234" text-anchor="middle" font-size="13" font-weight="600">one structured LLM call</text>
+          <text x="430" y="251" text-anchor="middle" font-size="10.5" fill="var(--ink-faint)">intent, reply, end?, fields</text>
+          <text x="430" y="266" text-anchor="middle" font-size="10.5" fill="var(--ink-faint)">llm.py</text>
+
+          <!-- Decide to score/gate -->
+          <line x1="430" y1="276" x2="430" y2="322" stroke="currentColor" stroke-width="1.3" marker-end="url(#arrow)"/>
+
+          <rect x="270" y="322" width="320" height="90" rx="12" class="fill-danger" stroke-width="1.5"/>
+          <text x="430" y="346" text-anchor="middle" font-size="13" font-weight="600">grounding gate</text>
+          <text x="430" y="364" text-anchor="middle" font-size="10.5" fill="var(--ink-faint)">score_reply() cosine vs. governing / reference</text>
+          <text x="430" y="380" text-anchor="middle" font-size="10.5" fill="var(--ink-faint)">spliced or ungrounded → regenerate once</text>
+          <text x="430" y="398" text-anchor="middle" font-size="10.5" fill="var(--ink-faint)">still failing → shipped + flagged, never hidden</text>
+
+          <!-- Gate loop-back to decide -->
+          <path d="M 590 340 C 660 340 660 240 566 240" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+          <text x="640" y="290" font-size="10" fill="var(--ink-faint)" text-anchor="middle">1 regen, w/ correction</text>
+
+          <!-- Gate to speak/state -->
+          <line x1="430" y1="412" x2="430" y2="452" stroke="currentColor" stroke-width="1.3" marker-end="url(#arrow)"/>
+
+          <rect x="240" y="452" width="180" height="60" rx="12" class="fill-neutral" stroke-width="1.3"/>
+          <text x="330" y="475" text-anchor="middle" font-size="12" font-weight="600">CallState</text>
+          <text x="330" y="491" text-anchor="middle" font-size="10" fill="var(--ink-faint)">intent, opt_out, asked_qs</text>
+          <text x="330" y="504" text-anchor="middle" font-size="10" fill="var(--ink-faint)">terminal → ends call</text>
+
+          <rect x="440" y="452" width="180" height="60" rx="12" class="fill-neutral" stroke-width="1.3"/>
+          <text x="530" y="475" text-anchor="middle" font-size="12" font-weight="600">turns table</text>
+          <text x="530" y="491" text-anchor="middle" font-size="10" fill="var(--ink-faint)">prompt_sent, cosine,</text>
+          <text x="530" y="504" text-anchor="middle" font-size="10" fill="var(--ink-faint)">outcome, latency</text>
+
+          <line x1="620" y1="482" x2="670" y2="482" stroke="currentColor" stroke-width="1.1"/>
+          <line x1="670" y1="482" x2="670" y2="65" stroke="currentColor" stroke-width="1.1" stroke-dasharray="2 3"/>
+          <line x1="670" y1="65" x2="950" y2="65" stroke="currentColor" stroke-width="1.1" stroke-dasharray="2 3"/>
+          <text x="700" y="440" font-size="9.5" fill="var(--ink-faint)">writes</text>
+
+          <!-- Divider between live path and offline loop -->
+          <line x1="30" y1="555" x2="1150" y2="555" stroke="var(--line-strong)" stroke-width="1"/>
+          <text x="30" y="545" font-size="10.5" fill="var(--ink-faint)" letter-spacing="0.04em">— call ends here; below runs only after —</text>
+
+          <!-- Offline loop -->
+          <rect x="30" y="565" width="230" height="50" rx="10" class="fill-loop" stroke-width="1.4"/>
+          <text x="145" y="586" text-anchor="middle" font-size="12" font-weight="600" class="lbl-loop">finished transcript</text>
+          <text x="145" y="602" text-anchor="middle" font-size="10" fill="var(--ink-faint)">call_transcripts table</text>
+
+          <line x1="260" y1="590" x2="330" y2="590" stroke="var(--loop)" stroke-width="1.3" marker-end="url(#arrowLoop)"/>
+
+          <rect x="330" y="565" width="240" height="50" rx="10" class="fill-loop" stroke-width="1.4"/>
+          <text x="450" y="586" text-anchor="middle" font-size="12" font-weight="600" class="lbl-loop">consolidator.py</text>
+          <text x="450" y="602" text-anchor="middle" font-size="10" fill="var(--ink-faint)">extract → gate → insert</text>
+
+          <line x1="570" y1="590" x2="640" y2="590" stroke="var(--loop)" stroke-width="1.3" marker-end="url(#arrowLoop)"/>
+
+          <rect x="640" y="565" width="200" height="50" rx="10" class="fill-loop" stroke-width="1.4"/>
+          <text x="740" y="586" text-anchor="middle" font-size="12" font-weight="600" class="lbl-loop">needs_review</text>
+          <text x="740" y="602" text-anchor="middle" font-size="10" fill="var(--ink-faint)">or: new learned rule</text>
+
+          <path d="M 840 578 C 920 578 920 480 780 470 C 700 462 690 200 950 100" fill="none" stroke="var(--loop)" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#arrowLoop)"/>
+          <text x="900" y="330" font-size="10" class="lbl-loop" text-anchor="middle" transform="rotate(-90 900 330)">inserted back into the same pool</text>
+        </svg>
+      </div>
+      <figcaption>
+        The live turn path (top) runs on every message: retrieve one governing rule,
+        get one structured decision, grade the reply against that rule, apply it, log
+        it. The offline loop (bottom, teal) runs only after a call ends, reading the
+        transcript nothing in the live path touches, and feeds new rules back into the
+        exact same <code>chunks</code> table retrieval already queries — no separate
+        store, no promotion step.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section id="retrieval">
+    <h2>Retrieval: one flat pool, two decisions</h2>
+    <p class="section-note">
+      There is no stage machine and no branch tree. Every rule is one row in Postgres,
+      found by cosine similarity against a short <strong>cue</strong> — the caller-side
+      situation that should surface it — never against the rule's own scripted text.
+      Two semantic decisions happen per turn, both against the same query vector.
+    </p>
+
+    <div class="two-col">
+      <div class="card">
+        <h3>1 · does the message name an intent?</h3>
+        <p>
+          The caller's message alone (never blended with prior context) is scored
+          against <code>kb.INTENT_EXEMPLARS</code> — short caller-phrased examples per
+          label, e.g. <code>dnc</code>, <code>busy</code>, <code>callback_request</code>.
+          Above cosine <strong>0.45</strong> the closest label wins; below it, no intent.
+        </p>
+      </div>
+      <div class="card">
+        <h3>2 · which single rule governs?</h3>
+        <p>
+          With an intent: the nearest rule carrying that <code>intent</code> column —
+          one row, nothing else in scope. Without one: the two nearest rules where
+          <code>intent IS NULL</code> — the closest governs, the runner-up is
+          reference-only context, never a source of content.
+        </p>
+      </div>
+    </div>
+
+    <figure>
+      <div class="diagram-scroll">
+        <svg viewBox="0 0 900 260" role="img" aria-label="Retrieval blends the caller message with the tail of the agent's previous line at 0.9 to 0.1 weight to search the pool, while the bare caller message alone is used to classify intent, since blending in the agent's line would pollute intent classification.">
+          <defs>
+            <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+
+          <rect x="20" y="20" width="230" height="46" rx="9" class="fill-neutral" stroke-width="1.2"/>
+          <text x="135" y="48" text-anchor="middle" font-size="12">caller's message (this turn)</text>
+
+          <rect x="20" y="90" width="230" height="46" rx="9" class="fill-neutral" stroke-width="1.2"/>
+          <text x="135" y="112" text-anchor="middle" font-size="11.5">Maya's last line —</text>
+          <text x="135" y="126" text-anchor="middle" font-size="11.5">tail 90 chars only</text>
+
+          <!-- message alone -> intent -->
+          <line x1="250" y1="43" x2="330" y2="43" stroke="currentColor" stroke-width="1.2" marker-end="url(#arrow2)"/>
+          <rect x="330" y="20" width="220" height="46" rx="9" class="fill-accent" stroke-width="1.4"/>
+          <text x="440" y="41" text-anchor="middle" font-size="12" class="lbl-accent" font-weight="600">IntentRouter.detect()</text>
+          <text x="440" y="57" text-anchor="middle" font-size="10" fill="var(--ink-faint)">cosine ≥ 0.45 → label</text>
+
+          <!-- both blended -> pool query -->
+          <line x1="135" y1="66" x2="135" y2="180" stroke="currentColor" stroke-width="1.1"/>
+          <line x1="135" y1="136" x2="135" y2="180" stroke="currentColor" stroke-width="1.1"/>
+          <line x1="135" y1="180" x2="330" y2="180" stroke="currentColor" stroke-width="1.2" marker-end="url(#arrow2)"/>
+          <text x="200" y="172" text-anchor="middle" font-size="10" fill="var(--ink-faint)">blend 0.9 / 0.1</text>
+
+          <rect x="330" y="157" width="220" height="46" rx="9" class="fill-neutral" stroke-width="1.2"/>
+          <text x="440" y="178" text-anchor="middle" font-size="12">pool query vector</text>
+          <text x="440" y="194" text-anchor="middle" font-size="10" fill="var(--ink-faint)">used for the rule fetch</text>
+
+          <line x1="550" y1="180" x2="620" y2="180" stroke="currentColor" stroke-width="1.2" marker-end="url(#arrow2)"/>
+
+          <rect x="620" y="140" width="260" height="100" rx="10" class="fill-neutral" stroke-width="1.2"/>
+          <text x="750" y="163" text-anchor="middle" font-size="12" font-weight="600">has intent?</text>
+          <text x="750" y="185" text-anchor="middle" font-size="10.5" fill="var(--ink-faint)">yes → nearest rule w/ that intent</text>
+          <text x="750" y="200" text-anchor="middle" font-size="10.5" fill="var(--ink-faint)">no → 2 nearest, intent IS NULL</text>
+          <text x="750" y="218" text-anchor="middle" font-size="10.5" fill="var(--ink-faint)">below 0.30 sim → no rule at all</text>
+
+          <text x="440" y="245" text-anchor="middle" font-size="10" fill="var(--ink-faint)" font-style="italic">
+            why 0.9, not 0.5: character-weighted concatenation let Maya's longer line drown the caller out
+          </text>
+        </svg>
+      </div>
+      <figcaption>
+        Intent classification uses the bare caller message so a long prior turn from
+        Maya can't pollute it; the pool search blends in her line's tail at a
+        <strong>swept 0.9 / 0.1</strong> weight, because without it a short reply
+        like "yeah I guess so" is genuinely ambiguous on its own.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section id="grounding">
+    <h2>The grounding gate — checking the model told the truth</h2>
+    <p class="section-note">
+      A structured LLM call returns <code>{intent, reply, call_should_end,
+      extracted_fields}</code>. Nothing forces the reply to actually come from the
+      governing rule — so it's checked, the same way in chat and voice, before it's
+      trusted.
+    </p>
+    <div class="two-col">
+      <div class="card">
+        <h3>(b) spliced — checked first</h3>
+        <p>
+          If the reply's cosine to a <em>reference</em> rule beats its cosine to the
+          <em>governing</em> rule, the model took a sentence from the wrong place —
+          checked before the grounding floor because a splice can still clear 0.45
+          against its stolen source.
+        </p>
+      </div>
+      <div class="card">
+        <h3>(a) ungrounded — the floor</h3>
+        <p>
+          Below cosine <code>0.45</code> against the governing rule, the reply isn't
+          traceable to it at all — the model improvised. One regeneration is granted,
+          with the specific reason appended to the prompt as a correction block.
+        </p>
+      </div>
+    </div>
+    <p class="tight" style="margin-top:1.2rem; color:var(--ink-soft); font-size:0.94rem;">
+      Still failing after that one regeneration → shipped anyway, but logged as
+      <code>ungrounded</code>/<code>spliced</code> in the <code>turns</code> table rather
+      than silently forced through. A <strong>terminal</strong> rule additionally forces
+      <code>call_should_end=true</code> regardless of what the model returned, and strips
+      any sentence trailing the close — the model doesn't get a vote on whether the call
+      is over.
+    </p>
+  </section>
+
+  <section id="kb">
+    <h2>The pool itself</h2>
+    <p class="section-note">
+      One <code>chunks</code> table. A seed rule is hand-authored at boot; a learned
+      rule is written later by the consolidator, through the exact same insert path —
+      retrieval cannot tell the two apart, and isn't supposed to.
+    </p>
+    <div class="rule-list">
+      <div class="rule-row"><span class="id">intent = NULL</span><span class="desc">reachable only by plain semantic similarity — the general conversational flow (opening, identity check, benefits question, hold/retry, wrong number, medical emergency…)</span></div>
+      <div class="rule-row"><span class="id">intent = "dnc" / "abuse"</span><span class="desc"><span class="pill live">priority: critical</span> always outranks distance within its intent — a compliance close must never lose to a closer-scoring learned paraphrase</span></div>
+      <div class="rule-row"><span class="id">intent = "busy" / "elsewhere" / …</span><span class="desc"><span class="pill live">priority: high</span> the 12 other routable labels — callback, redirect, language, pricing, clinical, AI-question, and so on</span></div>
+      <div class="rule-row"><span class="id">terminal = true</span><span class="desc">speaking this rule ends the call — enforced in code after the model replies, not requested of it</span></div>
+      <div class="rule-row"><span class="id">exclusive = true</span><span class="desc">nothing else may share the turn — the reference list is emptied, so there's no second rule to splice from</span></div>
+    </div>
+  </section>
+
+  <section id="learning">
+    <h2>The offline loop — how the pool grows</h2>
+    <p class="section-note">
+      Runs once, after a call ends — never mid-turn. Takes a finished transcript in,
+      and either a new rule or a flagged review row comes out; nothing is silently
+      applied and nothing is silently dropped.
+    </p>
+    <figure>
+      <div class="diagram-scroll">
+        <svg viewBox="0 0 980 190" role="img" aria-label="The consolidator extracts candidate rules from a transcript with an LLM, then runs each through three gates in order: grounded in a real transcript line, not a near duplicate of an existing rule by cosine, and not in factual conflict with an existing rule on the same topic — only then is it inserted into the shared pool; a rejection at any gate is either discarded or written to needs_review, never silently applied.">
+          <defs>
+            <marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+          <rect x="10" y="66" width="160" height="56" rx="10" class="fill-loop" stroke-width="1.3"/>
+          <text x="90" y="90" text-anchor="middle" font-size="12" font-weight="600" class="lbl-loop">transcript</text>
+          <text x="90" y="106" text-anchor="middle" font-size="10" fill="var(--ink-faint)">finished call</text>
+
+          <line x1="170" y1="94" x2="220" y2="94" stroke="currentColor" stroke-width="1.2" marker-end="url(#arrow3)"/>
+
+          <rect x="220" y="60" width="170" height="68" rx="10" class="fill-neutral" stroke-width="1.2"/>
+          <text x="305" y="86" text-anchor="middle" font-size="11.5" font-weight="600">LLM extraction</text>
+          <text x="305" y="102" text-anchor="middle" font-size="10" fill="var(--ink-faint)">≤3 candidates,</text>
+          <text x="305" y="115" text-anchor="middle" font-size="10" fill="var(--ink-faint)">intent ∈ routable set</text>
+
+          <line x1="390" y1="94" x2="430" y2="94" stroke="currentColor" stroke-width="1.2" marker-end="url(#arrow3)"/>
+
+          <!-- 3 gates stacked -->
+          <rect x="430" y="10" width="170" height="46" rx="9" class="fill-neutral" stroke-width="1.2"/>
+          <text x="515" y="30" text-anchor="middle" font-size="11" font-weight="600">grounded?</text>
+          <text x="515" y="45" text-anchor="middle" font-size="9.5" fill="var(--ink-faint)">source line verbatim in transcript</text>
+
+          <rect x="430" y="70" width="170" height="46" rx="9" class="fill-neutral" stroke-width="1.2"/>
+          <text x="515" y="90" text-anchor="middle" font-size="11" font-weight="600">duplicate?</text>
+          <text x="515" y="105" text-anchor="middle" font-size="9.5" fill="var(--ink-faint)">cosine &gt; 0.85 vs. pool</text>
+
+          <rect x="430" y="130" width="170" height="46" rx="9" class="fill-neutral" stroke-width="1.2"/>
+          <text x="515" y="150" text-anchor="middle" font-size="11" font-weight="600">conflict?</text>
+          <text x="515" y="165" text-anchor="middle" font-size="9.5" fill="var(--ink-faint)">same topic, opposite assertion</text>
+
+          <line x1="600" y1="33" x2="650" y2="33" stroke="currentColor" stroke-width="1.1" stroke-dasharray="3 3"/>
+          <line x1="600" y1="93" x2="650" y2="93" stroke="currentColor" stroke-width="1.1" stroke-dasharray="3 3"/>
+          <line x1="600" y1="153" x2="650" y2="153" stroke="currentColor" stroke-width="1.1" stroke-dasharray="3 3"/>
+          <line x1="650" y1="33" x2="650" y2="153" stroke="currentColor" stroke-width="1.1" stroke-dasharray="3 3"/>
+          <line x1="650" y1="93" x2="700" y2="93" stroke="currentColor" stroke-width="1.2" marker-end="url(#arrow3)"/>
+
+          <rect x="700" y="18" width="130" height="150" rx="10" class="fill-neutral" stroke-width="1.2"/>
+          <text x="765" y="42" text-anchor="middle" font-size="11" font-weight="600">fail any gate</text>
+          <line x1="712" y1="52" x2="818" y2="52" stroke="var(--line-strong)" stroke-width="1"/>
+          <text x="765" y="72" text-anchor="middle" font-size="10">→ discarded</text>
+          <text x="765" y="88" text-anchor="middle" font-size="9.5" fill="var(--ink-faint)">(ungrounded)</text>
+          <text x="765" y="112" text-anchor="middle" font-size="10">→ needs_review</text>
+          <text x="765" y="128" text-anchor="middle" font-size="9.5" fill="var(--ink-faint)">(duplicate / conflict)</text>
+          <text x="765" y="152" text-anchor="middle" font-size="9.5" fill="var(--ink-faint)" font-style="italic">human decides</text>
+
+          <rect x="855" y="66" width="115" height="56" rx="10" class="fill-loop" stroke-width="1.4"/>
+          <text x="912" y="90" text-anchor="middle" font-size="11.5" font-weight="600" class="lbl-loop">chunks</text>
+          <text x="912" y="105" text-anchor="middle" font-size="9.5" fill="var(--ink-faint)">insert_chunk()</text>
+          <line x1="650" y1="33" x2="912" y2="33" stroke="var(--loop)" stroke-width="1.2"/>
+          <line x1="912" y1="33" x2="912" y2="66" stroke="var(--loop)" stroke-width="1.2" marker-end="url(#arrowLoop)"/>
+          <text x="880" y="20" font-size="9.5" fill="var(--loop-ink)">pass all 3</text>
+        </svg>
+      </div>
+      <figcaption>
+        Same insert path <code>load_kb.py</code> uses to seed the table at boot — the
+        consolidator has no side door. A voice worker refreshes its in-memory pool
+        cache right after, so a rule learned this call is reachable on the
+        <em>next</em> one, same process.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section id="numbers">
+    <h2>Why a pool instead of one prompt</h2>
+    <p class="section-note">
+      The comparison this whole design is answering: a monolithic system prompt
+      carrying every branch, versus one retrieved rule per turn.
+    </p>
+    <div class="two-col">
+      <div class="card">
+        <h3><span class="pill live">before</span> monolith</h3>
+        <p>One system prompt holds every stage, every branch, every edge case —
+        pinned at <code>5,782</code> tokens, sent whole on every single turn whether
+        or not it's relevant to what the caller just said.</p>
+      </div>
+      <div class="card">
+        <h3><span class="pill live">now</span> retrieved pool</h3>
+        <p>Stable core + exactly one governing rule (+ ≤1 reference rule) —
+        measured at <code>965–1,296</code> tokens/turn, a <code>78–83%</code> cut
+        against the monolith, computed fresh per turn and reported as
+        <code>saved_pct</code> in the debug trace.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Traced from <code>sace_chat/engine.py</code>, <code>retrieve.py</code>,
+    <code>kb.py</code>, <code>assemble.py</code>, <code>manager.py</code>,
+    <code>db.py</code>, and <code>consolidator.py</code> on <code>main</code>. Both
+    <code>voice_agent.py</code> and <code>streamlit_app.py</code> call
+    <code>Engine.build_turn_context</code> for the identical prompt; only voice adds a
+    post-hoc, log-only validation pass since the reply is already spoken by the time it
+    completes.
+  </footer>
+
+</div>

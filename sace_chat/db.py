@@ -128,7 +128,15 @@ class NeedsReviewRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
-engine = create_engine(DATABASE_URL, future=True)
+# A stuck or slow query would otherwise hang a live turn indefinitely — nothing
+# upstream (voice_agent.py, engine.py) bounds how long a pgvector query can take.
+# statement_timeout is enforced by Postgres itself, so it applies no matter which
+# code path issues the query.
+_DB_STATEMENT_TIMEOUT_MS = int(os.environ.get("SACE_DB_STATEMENT_TIMEOUT_MS", "5000"))
+engine = create_engine(
+    DATABASE_URL, future=True,
+    connect_args={"options": f"-c statement_timeout={_DB_STATEMENT_TIMEOUT_MS}"},
+)
 SessionLocal = sessionmaker(bind=engine, future=True)
 
 

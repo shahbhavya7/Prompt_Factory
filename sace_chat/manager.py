@@ -97,7 +97,14 @@ def resolve_precedence(intent: str, message: str) -> tuple[str, bool]:
     - abuse outranks dnc when both read true in one utterance, but the call is
       still tagged opt_out because a do-not-call request was present;
     - an explicit day or time outranks a "busy" reading ("I'm slammed, try me
-      Monday" is a callback, not a brush-off).
+      Monday" is a callback, not a brush-off);
+    - a DNC/abuse signal in the message text overrides whatever intent the
+      semantic router picked, not just the case where it already picked dnc
+      or abuse. A caller who blends resistance into another remark ("I've
+      told you people to stop calling, this is so frustrating") can score
+      closer to a softer label like `frustration` by cosine — the router
+      only returns its single best-scoring guess, so without this check
+      that phrasing would never reach the DNC/abuse branch above at all.
     """
     lower = (message or "").lower()
     opt_out = False
@@ -105,16 +112,13 @@ def resolve_precedence(intent: str, message: str) -> tuple[str, bool]:
     looks_abusive = _matches_any(_ABUSE_HINTS, lower)
     looks_dnc = _matches_any(_DNC_HINTS, lower)
 
-    if intent == "dnc" and looks_abusive:
-        return "abuse", True
-    if intent == "abuse" and looks_dnc:
-        return "abuse", True
+    if looks_abusive:
+        return "abuse", True if looks_dnc else opt_out
+    if looks_dnc:
+        return "dnc", True
 
     if intent == "busy" and mentions_day_or_time(message or ""):
         return "callback_request", opt_out
-
-    if intent == "dnc":
-        opt_out = True
 
     return intent, opt_out
 

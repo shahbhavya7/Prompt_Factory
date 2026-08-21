@@ -31,6 +31,8 @@ Return ONLY a JSON object, no prose around it:
   sentence, question or closing from REFERENCE, from RECENT TURNS, or from your
   own sense of what such a call normally asks.
 - Never re-ask anything under ALREADY ASKED, in any wording.
+- Never re-ask for a value already listed under ALREADY ON FILE, and never
+  state a different value for it than what is shown there.
 - A hedge is an answer. "I'm not sure", "I don't know", "maybe" all answer a
   yes/no question — follow where the governing rule sends an unsure answer
   instead of asking again.
@@ -95,6 +97,23 @@ def _asked_section(asked_questions) -> str:
     return "\n".join(lines)
 
 
+def _collected_fields_section(collected_fields) -> str:
+    """Surfaces state.collected_fields into the prompt.
+
+    Without this, a value the caller already gave (and that got saved to
+    state) is invisible to the model on the next turn — it only sees the
+    raw RECENT TURNS dialogue, not the confirmed values extracted from it.
+    That made the model re-ask for things already on file, or invent a
+    plausible-sounding value instead of using the real stored one.
+    """
+    lines = ["ALREADY ON FILE (already confirmed this call; never re-ask for these, "
+              "never invent a different value — reuse exactly what is shown):"]
+    if not collected_fields:
+        return lines[0] + "\n(nothing yet)"
+    lines += [f"- {k}: {v}" for k, v in collected_fields.items()]
+    return "\n".join(lines)
+
+
 def _history_section(history) -> str:
     recent = (history or [])[-HISTORY_TURNS:]
     lines = ["RECENT TURNS (context for who said what, not a source of content):"]
@@ -109,6 +128,7 @@ def build_turn_prompt(stable_core: str, state, retrieval, history, reinforce_rea
         stable_core.strip(),
         _governing_section(retrieval),
         _reference_section(retrieval),
+        _collected_fields_section(getattr(state, "collected_fields", {})),
         _asked_section(getattr(state, "asked_questions", [])),
         _history_section(history),
         _TURN_INSTRUCTION,

@@ -2,15 +2,22 @@
 #
 # sace-chat runner.
 #
-# Two services, not three: the Postgres/pgvector container, and the Streamlit
-# app. There is no separate backend tier — streamlit_app.py imports the engine
-# in-process (api.py was removed when the turn loop was rebuilt), so "frontend"
-# and "backend" are the same process here.
+# The Postgres/pgvector container, the Streamlit engineering app, an (older)
+# FastAPI + React text-chat demo, and the React app in frontend/ — now a
+# LIVE SPECTATOR DASHBOARD for voice_agent.py, not a chat client. Watching a
+# call needs no separate backend: voice_agent.py itself opens a small
+# websocket (VOICE_WS_PORT, default 8765) and pushes retrieval/turn/learned
+# events straight to any browser tab running `cd frontend && npm run dev` —
+# purely additive, nothing flows back into the call. streamlit_app.py and
+# api/main.py (the older text-chat demo's backend) are untouched by this and
+# still import the engine in-process the same way they always did.
 #
 #   ./run.sh start        db + app in the BACKGROUND (logs go to a file)
 #   ./run.sh dev          db + app in the FOREGROUND, logs live in this terminal
+#   ./run.sh demo         db + the (older) FastAPI text-chat demo backend
 #   ./run.sh voice        db + voice agent in console mode — talk to it with your
-#                         mic; per-turn logs stream live. Needs no LiveKit creds.
+#                         mic; per-turn logs stream live, AND to the live dashboard
+#                         if `cd frontend && npm run dev` is running. No LiveKit creds needed.
 #   ./run.sh voice-dev    voice agent as a LiveKit worker (needs a real
 #                         LIVEKIT_URL + key/secret), logs live
 #   ./run.sh all          db + dashboard + local audible voice agent
@@ -30,8 +37,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 CONDA_ENV="sace-chat"
 APP_PORT="${APP_PORT:-8501}"
-DB_PORT="5433"          # 5433 deliberately: the host already runs its own
-                        # Postgres on 5432 and this must not collide with it.
+API_PORT="${API_PORT:-8000}"
+DB_PORT="5434"          # off 5432 (host Postgres) and off 5433, which on this
+                        # machine is already held by an unrelated project's
+                        # container (atlas-db-1) — picked 5434 to avoid both.
 APP_LOG="/tmp/sace-chat-app.log"
 APP_PIDFILE="/tmp/sace-chat-app.pid"
 
@@ -252,6 +261,21 @@ cmd_dev() {
     --browser.gatherUsageStats false
 }
 
+# The stakeholder demo's backend only — same Engine, wrapped as a REST API for
+# the React app in frontend/. Run `cd frontend && npm install && npm run dev`
+# in a second terminal for the UI itself; that dev server is a separate
+# process this script does not manage.
+cmd_demo() {
+  activate_env; load_dotenv; check_env_sanity
+  start_db
+  ensure_kb
+  echo
+  info "demo API in the foreground — logs below, Ctrl-C to stop"
+  printf '  api     http://localhost:%s\n' "$API_PORT"
+  printf '  then, in another terminal: cd frontend && npm install && npm run dev\n\n'
+  exec uvicorn api.main:app --reload --port "$API_PORT"
+}
+
 # Console mode talks to your microphone directly and needs NO LiveKit
 # credentials — it runs a local mock job. This is the way to place a test call.
 cmd_voice() {
@@ -262,7 +286,9 @@ cmd_voice() {
   echo
   info "voice agent · console mode · speak into your mic"
   printf '  one line per turn: intent, governing rule, tokens, grounding cosine, latency\n'
-  printf '  turns are also written to the `turns` table -> Live voice monitor page\n'
+  printf '  turns are also written to the `turns` table\n'
+  printf '  live dashboard: cd frontend && npm run dev, then open it — same events,\n'
+  printf '  streamed over ws://localhost:%s as the call happens\n' "${VOICE_WS_PORT:-8765}"
   printf '  Ctrl-C to hang up (the learning loop runs on shutdown)\n\n'
   exec python voice_agent.py console
 }
@@ -279,6 +305,7 @@ cmd_voice_dev() {
   ensure_kb
   echo
   info "voice agent · LiveKit worker · ${LIVEKIT_URL}"
+  printf '  live dashboard: cd frontend && npm run dev, then open it\n\n'
   exec python voice_agent.py dev
 }
 
@@ -366,6 +393,7 @@ case "${1:-start}" in
   all)       cmd_all ;;
   all-livekit) cmd_all_livekit ;;
   dev)       cmd_dev ;;
+  demo)      cmd_demo ;;
   voice)     cmd_voice ;;
   voice-dev) cmd_voice_dev ;;
   stop)      cmd_stop ;;
@@ -380,5 +408,5 @@ case "${1:-start}" in
     # Print the leading comment block and stop at the first line that is not a
     # comment, so the help text cannot drift out of sync with a line number.
     awk 'NR>1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}" ;;
-  *) die "unknown command '${1}' — try: start all all-livekit dev voice voice-dev stop restart status logs reload-kb reset-kb repair shell" ;;
+  *) die "unknown command '${1}' — try: start all all-livekit dev demo voice voice-dev stop restart status logs reload-kb reset-kb repair shell" ;;
 esac

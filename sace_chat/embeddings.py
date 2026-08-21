@@ -32,8 +32,12 @@ class OpenAIEmbedder:
     def __init__(self, model: str = "text-embedding-3-small"):
         from openai import OpenAI
 
+        # Same reasoning as OpenAICompatibleLLM's timeout: retrieval runs on
+        # every turn, so a stuck embedding call would hang the call with
+        # nothing upstream to bound it.
+        timeout = float(os.environ.get("SACE_EMBED_TIMEOUT_S", "5"))
         api_key = os.environ.get("OPENAI_API_KEY") or os.environ["SACE_LLM_KEY"]
-        self._client = OpenAI(api_key=api_key)
+        self._client = OpenAI(api_key=api_key, timeout=timeout)
         self._model = model
 
     def embed(self, text: str) -> list[float]:

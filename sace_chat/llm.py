@@ -119,9 +119,13 @@ class OpenAICompatibleLLM:
     def __init__(self, api_key=None, base_url=None, model=None):
         from openai import OpenAI
 
+        # Without a timeout, a slow or stuck LLM call hangs on_user_turn_completed
+        # (and the whole call) indefinitely — nothing upstream bounds this.
+        timeout = float(os.environ.get("SACE_LLM_TIMEOUT_S", "8"))
         self._client = OpenAI(
             api_key=api_key or os.environ["SACE_LLM_KEY"],
             base_url=base_url or os.environ.get("SACE_LLM_BASE", "https://api.openai.com/v1"),
+            timeout=timeout,
         )
         self._model = model or os.environ.get("SACE_LLM_MODEL", "gpt-4o-mini")
         self.name = self._model

@@ -28,3 +28,7 @@ livekit-plugins-turn-detector==1.6.7
 # OpenAI 1536-dim vectors either way — see embeddings.get_hotpath_embedder for
 # why a dimension mismatch here is safe and where it would not be.
 # sentence-transformers==3.3.1
+
+# ── demo API (FastAPI, wraps Engine for the frontend/ React app) ───────────
+fastapi==0.140.13
+uvicorn[standard]==0.51.0

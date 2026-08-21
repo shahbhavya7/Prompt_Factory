@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .DS_Store
 .vscode/
+console-recordings/
+call_logs/
+frontend/node_modules/
+frontend/dist/

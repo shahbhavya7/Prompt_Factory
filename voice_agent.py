@@ -28,6 +28,7 @@ Run:  python voice_agent.py dev        (connects a worker to LIVEKIT_URL)
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 import uuid
@@ -60,6 +61,7 @@ STT_MODEL = os.environ.get("DEEPGRAM_STT_MODEL", "nova-3")
 TTS_MODEL = os.environ.get("DEEPGRAM_TTS_MODEL", "aura-2-thalia-en")
 LLM_MODEL = os.environ.get("SACE_LLM_MODEL", "gpt-4o-mini")
 AGENT_NAME = os.environ.get("LIVEKIT_AGENT_NAME", "sace-calling-agent")
+VOICE_WS_PORT = int(os.environ.get("VOICE_WS_PORT", "8765"))
 
 # Deepgram endpointing: silence after speech before the transcript is finalised.
 # ~300ms is a natural turn boundary for this kind of call; lower feels clipped,
@@ -71,6 +73,85 @@ VAD_MIN_SILENCE = float(os.environ.get("VAD_MIN_SILENCE", "0.30"))
 
 def _fmt_ms(v) -> str:
     return "   —" if v is None else f"{v:4.0f}"
+
+
+# ───────────────────────── live spectator broadcast ─────────────────────────
+# A set of connected browser tabs watching a call happen, fed from the exact
+# same data the terminal already prints and the DB already stores. The one
+# thing that flows back is "end_call" — everything the dashboard shows is
+# still just what the agent already decided and did.
+_WS_CLIENTS: set = set()
+# The one call this worker process is currently handling, if any — set at the
+# top of entrypoint, cleared when it ends. A dashboard's "End call" button
+# needs a live AgentSession to close; this is the only place that exists.
+_ACTIVE_SESSION: AgentSession | None = None
+# Captured once, when the ws server starts, on the loop that owns _WS_CLIENTS.
+# run_learning (and therefore every "learned"/"learning_done" broadcast) runs
+# via asyncio.to_thread — a real OS thread with no running loop of its own —
+# so broadcast() cannot rely on asyncio.get_running_loop() the way the
+# in-loop call sites (retrieval, turn) can; it needs this to schedule onto
+# the right loop from any thread.
+_MAIN_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+async def _ws_handler(websocket):
+    _WS_CLIENTS.add(websocket)
+    try:
+        async for raw in websocket:
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+            if msg.get("type") == "end_call" and _ACTIVE_SESSION is not None:
+                print("[dashboard] end_call requested from the browser")
+                asyncio.create_task(_close(_ACTIVE_SESSION))
+    finally:
+        _WS_CLIENTS.discard(websocket)
+
+
+def broadcast(event: dict) -> None:
+    """Fire-and-forget push to every connected dashboard tab.
+
+    Called both from the event loop (retrieval, turn — inside
+    on_user_turn_completed/finish_turn, which run on the loop) and from a
+    plain OS thread (run_learning, called via asyncio.to_thread — it has no
+    running loop of its own, so asyncio.get_running_loop() inside it always
+    raises). Either way this only ever schedules the send; it never awaits
+    it, so a slow or dead browser tab can't delay the call.
+    """
+    if not _WS_CLIENTS:
+        return
+    payload = json.dumps(event, default=str)
+
+    async def _send_all():
+        dead = []
+        for ws in list(_WS_CLIENTS):
+            try:
+                await ws.send(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            _WS_CLIENTS.discard(ws)
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_send_all())
+    except RuntimeError:
+        # No loop running in THIS thread — we're inside run_learning's
+        # asyncio.to_thread call. Schedule onto the loop that actually owns
+        # _WS_CLIENTS instead of silently dropping the event.
+        if _MAIN_LOOP is not None:
+            asyncio.run_coroutine_threadsafe(_send_all(), _MAIN_LOOP)
+
+
+async def _start_ws_server():
+    import websockets
+
+    global _MAIN_LOOP
+    _MAIN_LOOP = asyncio.get_running_loop()
+    server = await websockets.serve(_ws_handler, "localhost", VOICE_WS_PORT)
+    print(f"[dashboard] spectator websocket listening on ws://localhost:{VOICE_WS_PORT}")
+    return server
 
 
 class SaceVoiceAgent(Agent):
@@ -143,6 +224,26 @@ class SaceVoiceAgent(Agent):
             "terminal": bool(governing and governing.chunk.terminal),
             "notes": list(ctx["notes"]),
         }
+
+        # Live proof, the moment memory is searched — before the model has even
+        # replied. governing/reference here are already _rule_debug-shaped
+        # dicts (see engine.build_turn_context), so title/snippet/text need no
+        # extra lookup — this is literally what retrieval found.
+        gov_debug = ctx["governing"]
+        broadcast({
+            "type": "retrieval",
+            "turn_index": self.turn_index,
+            "user_text": user_text,
+            "intent": ctx["intent"],
+            "intent_cosine": ctx["intent_similarity"],
+            "governing_rule_id": gov_debug["id"] if gov_debug else None,
+            "governing_rule_title": gov_debug["title"] if gov_debug else None,
+            "governing_rule_snippet": gov_debug["snippet"] if gov_debug else None,
+            "reference_rule_ids": [r["id"] for r in ctx["reference"]],
+            "assembled_tokens": ctx["assembled_prompt_tokens"],
+            "monolith_tokens": ctx["monolith_tokens"],
+            "context_ms": ctx["context_ms"],
+        })
 
         # The framework builds the system message from `instructions` on each LLM
         # call, so this is the documented injection point. llm_node below also
@@ -331,6 +432,12 @@ class SaceVoiceAgent(Agent):
                "grounding_cosine": verdict["governing_cosine"],
                "latency_ms": total_ms, "prompt_sent": pending["prompt_sent"]}
         self.turn_log.append(row)
+
+        # Completes the story the "retrieval" event started: the reply that
+        # was actually spoken, and whether it stuck to the section retrieval
+        # found (outcome/grounding_cosine — same verdict the terminal line
+        # above prints, live rather than tailed from a log).
+        broadcast({"type": "turn", **row})
         return row
 
     # ───────────────────────── post-call learning ───────────────────────────
@@ -340,6 +447,7 @@ class SaceVoiceAgent(Agent):
         transcript = "\n".join(self.history)
         if not transcript.strip():
             print("[learn] empty transcript; nothing to consolidate")
+            broadcast({"type": "learning_done", "results": []})
             return []
 
         from sace_chat.consolidator import run_learning_loop
@@ -353,13 +461,20 @@ class SaceVoiceAgent(Agent):
                     transcript, self.engine.embedder, conn, llm=get_llm()
                 )
             for r in gate_results:
-                results.append({
+                entry = {
                     "outcome": r.outcome, "detail": r.detail,
                     "text": r.candidate.text, "intent": r.candidate.intent,
                     "learned_kind": r.candidate.learned_kind,
-                })
+                }
+                results.append(entry)
                 print(f"[learn] {r.outcome:<22} intent={str(r.candidate.intent):<18} {r.detail}")
                 print(f"        {r.candidate.text[:110]}")
+                # Streamed as each candidate is gated, not batched at the end —
+                # "what did it learn, under which intent, stored where" as it
+                # actually happens. `detail` already carries the DB proof
+                # (e.g. "id=learned_408c8991" on insert; the cosine + rule id
+                # it matched/conflicted against otherwise) — see GateResult.
+                broadcast({"type": "learned", **entry})
         except Exception as exc:
             print(f"[learn] failed: {type(exc).__name__}: {exc}")
 
@@ -368,6 +483,10 @@ class SaceVoiceAgent(Agent):
             turn_count=self.turn_index, learning_results=results,
         )
         print(f"[learn] transcript stored ({self.turn_index} turns, {len(results)} candidates)")
+        # Signals the stream of "learned" events is complete — without this
+        # the dashboard has no way to tell "still reviewing" apart from
+        # "reviewed, and there was nothing to learn."
+        broadcast({"type": "learning_done", "results": results})
         return results
 
 
@@ -396,7 +515,16 @@ def prewarm(proc):
 
 
 async def entrypoint(ctx: JobContext):
+    # Started once per worker process, not per call — a second call in the
+    # same process reuses the already-listening server. asyncio.create_task
+    # rather than awaiting it: entrypoint must not block on the dashboard
+    # ever being watched.
+    if not getattr(entrypoint, "_ws_started", False):
+        entrypoint._ws_started = True
+        asyncio.create_task(_start_ws_server())
+
     session_id = f"{ctx.room.name}:{uuid.uuid4().hex[:8]}"
+    broadcast({"type": "call_started", "session_id": session_id})
     engine = ctx.proc.userdata.get("engine") or build_engine()
     vad = ctx.proc.userdata.get("vad") or silero.VAD.load(min_silence_duration=VAD_MIN_SILENCE)
 
@@ -423,6 +551,9 @@ async def entrypoint(ctx: JobContext):
         # deprecated and is what suppresses interruption on terminal rules.
         turn_handling=TurnHandlingOptions(interruption=InterruptionOptions(enabled=True)),
     )
+
+    global _ACTIVE_SESSION
+    _ACTIVE_SESSION = session
 
     @session.on("user_state_changed")
     def _on_user_state(ev):
@@ -455,6 +586,9 @@ async def entrypoint(ctx: JobContext):
         if learned_once["done"]:
             return
         learned_once["done"] = True
+        global _ACTIVE_SESSION
+        _ACTIVE_SESSION = None
+        broadcast({"type": "call_ended", "session_id": session_id})
         await asyncio.to_thread(agent.run_learning)
 
     ctx.add_shutdown_callback(_consolidate)
