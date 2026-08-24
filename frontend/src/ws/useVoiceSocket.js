@@ -6,10 +6,10 @@ const RECONNECT_DELAY_MS = 2000;
 /** Connection to voice_agent.py's spectator broadcast.
  *
  * Mostly watch-only: it receives retrieval / turn / learned / learning_done /
- * call_started / call_ended / start_refused events as the real agent produces
- * them. The two things it can send back are {"type": "start_call"} and
- * {"type": "end_call"} — everything else shown by the dashboard is still just
- * what the agent already decided and did.
+ * call_started / call_ended / start_refused / audio_state events as the real
+ * agent produces them. It can send back {"type": "start_call"},
+ * {"type": "end_call"} and {"type": "set_audio"} — everything else shown by the
+ * dashboard is still just what the agent already decided and did.
  * Reconnects on drop, since the agent process may not be up yet when the
  * dashboard is opened, or may restart between calls.
  */
@@ -71,5 +71,18 @@ export function useVoiceSocket(onEvent) {
   const endCall = () => send("end_call");
   const startCall = () => send("start_call");
 
-  return { connected, endCall, startCall };
+  /** Flip an audio layer mid-call. Either field may be omitted, meaning "leave
+   *  that one alone". The agent echoes an `audio_state` back rather than the UI
+   *  assuming success — a layer that is unavailable cannot be switched on, and
+   *  the toggle must end up showing what is ACTUALLY running. */
+  const setAudio = (opts) => {
+    const sock = socketRef.current;
+    if (sock && sock.readyState === WebSocket.OPEN) {
+      sock.send(JSON.stringify({ type: "set_audio", ...opts }));
+      return true;
+    }
+    return false;
+  };
+
+  return { connected, endCall, startCall, setAudio };
 }

@@ -48,7 +48,22 @@ from livekit.agents import (
 )
 from livekit.agents.voice.agent_session import InterruptionOptions, TurnHandlingOptions
 from livekit.agents.voice.turn import PreemptiveGenerationOptions
+from livekit import rtc
 from livekit.plugins import deepgram, openai, silero
+
+import numpy as np
+
+from sace_audio import Denoiser, SpeakerGate, UtteranceFilter
+
+
+def _to_frame(samples: np.ndarray, sample_rate: int, channels: int = 1) -> rtc.AudioFrame:
+    """float32 [-1,1] back to the int16 AudioFrame the framework expects."""
+    pcm = np.clip(samples, -1.0, 1.0)
+    pcm = (pcm * 32767.0).astype(np.int16)
+    return rtc.AudioFrame(
+        data=pcm.tobytes(), sample_rate=sample_rate,
+        num_channels=channels, samples_per_channel=len(pcm) // channels,
+    )
 
 from sace_chat import manager
 from sace_chat.db import init_db, record_call_transcript, record_turn
@@ -71,6 +86,42 @@ ENDPOINTING_MS = int(os.environ.get("DEEPGRAM_ENDPOINTING_MS", "300"))
 UTTERANCE_END_MS = int(os.environ.get("DEEPGRAM_UTTERANCE_END_MS", "1000"))
 VAD_MIN_SILENCE = float(os.environ.get("VAD_MIN_SILENCE", "0.30"))
 
+# How confident Silero must be that a frame is speech before the turn opens.
+# Silero's default is 0.5; 0.6 is deliberately stricter.
+#
+# THIS IS A VOLUME GATE, NOT SPEAKER RECOGNITION — the distinction matters and
+# is easy to oversell. It rejects the quiet, distant, or half-overlapping speech
+# that a room full of people produces, because a far-off voice is attenuated and
+# scores lower. It does NOTHING about a colleague talking clearly next to the
+# mic: that is loud, confident speech and it will pass. Rejecting a voice
+# because of WHOSE it is needs sace_audio's speaker gate, which runs after this.
+#
+# Raised further and real callers start getting clipped — a softly-spoken person,
+# or the first syllable of a sentence. 0.6 is the point where background chatter
+# drops off without the caller having to project.
+VAD_ACTIVATION = float(os.environ.get("VAD_ACTIVATION", "0.6"))
+
+# Speech must last this long to open a turn. Silero's default of 0.05s is short
+# enough that a cough, a door, or one syllable from across the room starts a
+# turn and sends whatever follows to the LLM. 0.2s discards those without being
+# long enough to swallow a genuine "yes" or "no", which is what the script most
+# often needs to hear.
+VAD_MIN_SPEECH = float(os.environ.get("VAD_MIN_SPEECH", "0.20"))
+
+# Whether each audio layer starts enabled. The dashboard toggles both at
+# runtime; these only decide the state a call begins in.
+AUDIO_DENOISE_DEFAULT = os.environ.get(
+    "AUDIO_DENOISE", "on").strip().lower() not in {"off", "0", "false"}
+AUDIO_GATE_DEFAULT = os.environ.get(
+    "AUDIO_VOICE_GATE", "on").strip().lower() not in {"off", "0", "false"}
+
+
+def _onoff(available: bool, enabled: bool) -> str:
+    """How a layer reads in the boot line: unavailable is not the same as off."""
+    if not available:
+        return "unavailable"
+    return "ON" if enabled else "off"
+
 
 def _fmt_ms(v) -> str:
     return "   —" if v is None else f"{v:4.0f}"
@@ -86,6 +137,11 @@ _WS_CLIENTS: set = set()
 # top of entrypoint, cleared when it ends. A dashboard's "End call" button
 # needs a live AgentSession to close; this is the only place that exists.
 _ACTIVE_SESSION: AgentSession | None = None
+
+# The live agent, for the dashboard's audio toggles. Held alongside the session
+# because the audio filter lives on the AGENT, and the toggles have to reach the
+# instance that is actually processing frames — not a fresh one.
+_ACTIVE_AGENT = None
 # Captured once, when the ws server starts, on the loop that owns _WS_CLIENTS.
 # run_learning (and therefore every "learned"/"learning_done" broadcast) runs
 # via asyncio.to_thread — a real OS thread with no running loop of its own —
@@ -119,6 +175,10 @@ async def _ws_handler(websocket):
                 asyncio.create_task(_close(_ACTIVE_SESSION))
             elif kind == "start_call":
                 asyncio.create_task(_start_call_from_dashboard())
+            elif kind == "set_audio":
+                _set_audio(msg.get("denoise"), msg.get("gate"))
+            elif kind == "get_audio":
+                broadcast(audio_state())
     finally:
         _WS_CLIENTS.discard(websocket)
 
@@ -154,6 +214,49 @@ async def _start_call_from_dashboard() -> None:
                    "reason": f"{type(exc).__name__}: {exc}"})
     finally:
         _CALL_STARTING = False
+
+
+def audio_state() -> dict:
+    """What the dashboard's toggles should show.
+
+    `*_available` is reported separately from `*_enabled` because they fail
+    differently and the UI must not conflate them: a layer with no enrolment or
+    no library CANNOT be switched on, and showing that as a plain "off" toggle
+    invites the user to flip it and watch nothing happen.
+    """
+    agent = _ACTIVE_AGENT
+    f = getattr(agent, "_audio_filter", None) if agent else None
+    return {
+        "type": "audio_state",
+        "denoise_available": bool(f and f.denoiser is not None),
+        "denoise_enabled": bool(f and f.denoiser is not None and f.denoise_enabled),
+        "gate_available": bool(f and f.gate is not None),
+        "gate_enabled": bool(f and f.gate is not None and f.gate_enabled),
+        # Nothing to toggle at all — no call yet, or neither layer is installed.
+        "filter_present": f is not None,
+    }
+
+
+def _set_audio(denoise, gate) -> None:
+    """Flip either layer mid-call. None means "leave this one alone"."""
+    agent = _ACTIVE_AGENT
+    f = getattr(agent, "_audio_filter", None) if agent else None
+    if f is None:
+        broadcast({**audio_state(),
+                   "note": "no audio filter on this call — nothing to toggle"})
+        return
+
+    if denoise is not None and f.denoiser is not None:
+        f.denoise_enabled = bool(denoise)
+    if gate is not None and f.gate is not None:
+        f.gate_enabled = bool(gate)
+
+    print(f"[audio] dashboard set denoise={f.denoise_enabled} "
+          f"voice-gate={f.gate_enabled}")
+    # Echoed back rather than assumed by the browser: a request to enable a
+    # layer that is unavailable is silently ignored above, and the UI has to
+    # end up showing what is ACTUALLY on.
+    broadcast(audio_state())
 
 
 def broadcast(event: dict) -> None:
@@ -224,6 +327,33 @@ class SaceVoiceAgent(Agent):
         # Set by the UserStateChanged handler: when the caller stopped speaking.
         self._speech_end_at: float | None = None
         self.turn_log: list[dict] = []
+
+        # Caller-voice isolation (sace_audio). Built once per call rather than
+        # per turn: loading the ONNX session costs ~100ms and the enrolled
+        # reference never changes mid-call.
+        #
+        # None when no voice is enrolled, which makes stt_node a pass-through —
+        # a checkout with no enrolment behaves exactly as before, and the
+        # feature is opt-in via scripts/enroll_voice.py.
+        # Built whenever EITHER layer is available, not only when a voice is
+        # enrolled. The two toggle independently from the dashboard, and
+        # constructing the filter only for the gate would leave the denoise
+        # switch dead on a machine with no enrolment — which is the default.
+        denoiser = Denoiser()
+        gate = SpeakerGate()
+        if denoiser.enabled or gate.active:
+            self._audio_filter = UtteranceFilter(
+                denoiser=denoiser if denoiser.enabled else None,
+                gate=gate if gate.active else None,
+                denoise_enabled=AUDIO_DENOISE_DEFAULT,
+                gate_enabled=AUDIO_GATE_DEFAULT,
+            )
+        else:
+            self._audio_filter = None
+        print(f"[audio] denoise={_onoff(denoiser.enabled, AUDIO_DENOISE_DEFAULT)}  "
+              f"voice-gate={_onoff(gate.active, AUDIO_GATE_DEFAULT)}"
+              + ("" if gate.active else
+                 "  (no voice enrolled — python scripts/enroll_voice.py)"))
 
     # ───────────────────── pre-LLM hook: build SACE context ─────────────────
     async def on_user_turn_completed(
@@ -334,6 +464,43 @@ class SaceVoiceAgent(Agent):
             await handle
         except Exception as exc:  # pragma: no cover
             print(f"  [barge-in] terminal reply failed: {type(exc).__name__}: {exc}")
+
+    # ────────────────── STT node: denoise + reject other voices ─────────────
+    async def stt_node(self, audio, model_settings):
+        """Drop anyone who is not the enrolled caller, before STT ever sees it.
+
+        This is the replacement for LiveKit's BVC, which was removed: BVC ran on
+        LiveKit's servers, so it did nothing in console mode and tied the
+        feature to a paid service. Everything here is local and open source —
+        see the sace_audio package, which knows nothing about LiveKit and is the
+        piece that survives replacing it. The glue below is the only
+        framework-specific part.
+
+        Silero VAD upstream still answers "is anyone speaking". This answers the
+        question VAD cannot: "is it the CALLER?"
+
+        Inert unless a voice has been enrolled (scripts/enroll_voice.py) — with
+        no enrolment the filter forwards everything, so a fresh checkout behaves
+        exactly as it did before.
+        """
+        if self._audio_filter is None:
+            async for frame in audio:
+                yield frame
+            return
+
+        async def filtered():
+            async for frame in audio:
+                # LiveKit hands over int16 PCM; sace_audio works in float32,
+                # which is what both noisereduce and the ONNX model expect.
+                pcm = np.frombuffer(frame.data, dtype=np.int16)
+                mono = (pcm.astype(np.float32) / 32768.0)
+                for out in self._audio_filter.feed(mono, frame.sample_rate):
+                    yield _to_frame(out, frame.sample_rate, frame.num_channels)
+            for out in self._audio_filter.drain():
+                yield _to_frame(out, 16000, 1)
+
+        async for ev in Agent.default.stt_node(self, filtered(), model_settings):
+            yield ev
 
     # ───────────────────── LLM node: inject + capture + time ────────────────
     async def llm_node(self, chat_ctx: llm.ChatContext, tools, model_settings):
@@ -536,6 +703,19 @@ class SaceVoiceAgent(Agent):
     def run_learning(self):
         """The SAME between-calls loop the chat app runs. Never on the hot path —
         this is called after the session closes."""
+        # Surfaced once per call: a gate rejecting everything is otherwise
+        # invisible until someone notices the agent stopped responding, and the
+        # counters make a mis-set threshold obvious immediately.
+        if self._audio_filter is not None and self._audio_filter.gate is not None:
+            st = self._audio_filter.gate.stats()
+            print(f"[audio] speaker gate: {st['passed']} accepted, "
+                  f"{st['rejected']} rejected, {st['skipped_short']} too short "
+                  f"(threshold {st['threshold']})")
+            if st["passed"] == 0 and st["rejected"] > 0:
+                print("[audio] WARNING: every utterance was rejected. The "
+                      "enrolment likely does not match this microphone — "
+                      "re-run scripts/enroll_voice.py")
+
         transcript = "\n".join(self.history)
         if not transcript.strip():
             print("[learn] empty transcript; nothing to consolidate")
@@ -620,7 +800,11 @@ def build_engine() -> Engine:
 
 
 def prewarm(proc):
-    proc.userdata["vad"] = silero.VAD.load(min_silence_duration=VAD_MIN_SILENCE)
+    proc.userdata["vad"] = silero.VAD.load(
+        min_silence_duration=VAD_MIN_SILENCE,
+        activation_threshold=VAD_ACTIVATION,
+        min_speech_duration=VAD_MIN_SPEECH,
+    )
     proc.userdata["engine"] = build_engine()
 
 
@@ -661,7 +845,11 @@ async def run_call(ctx: JobContext):
     session_id = f"{ctx.room.name}:{uuid.uuid4().hex[:8]}"
     broadcast({"type": "call_started", "session_id": session_id})
     engine = ctx.proc.userdata.get("engine") or build_engine()
-    vad = ctx.proc.userdata.get("vad") or silero.VAD.load(min_silence_duration=VAD_MIN_SILENCE)
+    vad = ctx.proc.userdata.get("vad") or silero.VAD.load(
+        min_silence_duration=VAD_MIN_SILENCE,
+        activation_threshold=VAD_ACTIVATION,
+        min_speech_duration=VAD_MIN_SPEECH,
+    )
 
     agent = SaceVoiceAgent(engine, session_id)
     session = AgentSession(
@@ -711,8 +899,9 @@ async def run_call(ctx: JobContext):
         ),
     )
 
-    global _ACTIVE_SESSION
+    global _ACTIVE_SESSION, _ACTIVE_AGENT
     _ACTIVE_SESSION = session
+    _ACTIVE_AGENT = agent
 
     @session.on("user_state_changed")
     def _on_user_state(ev):
@@ -745,8 +934,9 @@ async def run_call(ctx: JobContext):
         if learned_once["done"]:
             return
         learned_once["done"] = True
-        global _ACTIVE_SESSION
+        global _ACTIVE_SESSION, _ACTIVE_AGENT
         _ACTIVE_SESSION = None
+        _ACTIVE_AGENT = None
         broadcast({"type": "call_ended", "session_id": session_id})
         await asyncio.to_thread(agent.run_learning)
 
@@ -762,6 +952,9 @@ async def run_call(ctx: JobContext):
 
     await session.start(agent=agent, room=ctx.room)
     print(f"[call] session {session_id} started in room {ctx.room.name}")
+    # Push the audio state now the agent exists, so the dashboard's toggles show
+    # what is actually running rather than staying blank until someone clicks.
+    broadcast(audio_state())
 
     # Maya opens the call — retrieval has nothing to route on until the caller
     # speaks, so the opening line comes from the KB's own opening rule.

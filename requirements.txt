@@ -23,6 +23,16 @@ livekit-plugins-silero==1.6.7
 livekit-plugins-openai==1.6.7
 livekit-plugins-turn-detector==1.6.7
 
+# ── caller-voice isolation (sace_audio) ────────────────────────────────────
+# Replaces LiveKit's BVC, which ran on LiveKit's servers (so it did nothing in
+# console mode) and tied the feature to a paid service. Both of these are
+# permissively licensed and run locally, and sace_audio imports no livekit —
+# it is the piece that survives replacing the framework.
+#
+# The speaker model itself is a ~26MB ONNX file fetched on first enrolment into
+# ~/.cache/sace, not vendored here. onnxruntime is already required by Silero.
+noisereduce==3.0.3     # MIT, spectral-gate denoise; pure numpy/scipy, no torch
+
 # ── optional: local hot-path embedder (EMBED_HOTPATH=local) ─────────────────
 # Only needed to move intent-exemplar matching off the network. The KB stays on
 # OpenAI 1536-dim vectors either way — see embeddings.get_hotpath_embedder for

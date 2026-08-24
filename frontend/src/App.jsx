@@ -7,6 +7,7 @@ import TranscriptView from "./components/TranscriptView";
 import MemoryLookupCard from "./components/MemoryLookupCard";
 import LearningFeed from "./components/LearningFeed";
 import CallControls from "./components/CallControls";
+import AudioToggles from "./components/AudioToggles";
 import ReviewQueue from "./components/ReviewQueue";
 
 const initialState = {
@@ -27,6 +28,9 @@ const initialState = {
   starting: false,
   // Why the agent refused to start, if it did. Shown until the next attempt.
   startError: null,
+  // Pushed by the agent on call start and after every toggle. Null until then,
+  // which is what hides the switches when there is nothing to switch.
+  audio: null,
 };
 
 function reducer(state, event) {
@@ -46,7 +50,12 @@ function reducer(state, event) {
         callActive: true,
       };
     case "call_ended":
-      return { ...state, callActive: false, starting: false };
+      // audio is cleared with the call: the toggles act on a live agent, and
+      // leaving them on screen after it exits would invite clicks that go
+      // nowhere.
+      return { ...state, callActive: false, starting: false, audio: null };
+    case "audio_state":
+      return { ...state, audio: event };
     case "retrieval":
       // A retrieval landing at all is itself proof a call is in progress —
       // covers the dashboard-opened-mid-call case where "call_started" was
@@ -79,7 +88,7 @@ function reducer(state, event) {
 
 export default function App() {
   const [state, dispatch] = useReducer(reducer, initialState);
-  const { connected, endCall, startCall } = useVoiceSocket(dispatch);
+  const { connected, endCall, startCall, setAudio } = useVoiceSocket(dispatch);
   const [tab, setTab] = useState("live");
   const [pendingCount, setPendingCount] = useState(null);
   // Bumped to make ReviewQueue refetch — on tab entry, and whenever a call's
@@ -157,6 +166,11 @@ export default function App() {
   // websocket, useVoiceSocket's reconnect loop picks it up within a couple of
   // seconds, and the button becomes "Start call" on its own — so there is
   // nothing to do on success but wait for `connected` to flip.
+  // Fire-and-forget: the agent echoes an audio_state back, and THAT is what
+  // updates the switches. No optimistic flip — a request to enable a layer that
+  // is unavailable is ignored, and the UI must show what is really running.
+  const handleAudioChange = useCallback((opts) => setAudio(opts), [setAudio]);
+
   const handleStartAgent = useCallback(() => {
     setAgentBooting(true);
     setAgentError(null);
@@ -247,6 +261,12 @@ export default function App() {
             starting={state.starting}
             agentBooting={agentBooting}
             startError={state.startError || agentError}
+          />
+
+          <AudioToggles
+            state={state.audio}
+            onChange={handleAudioChange}
+            disabled={!connected}
           />
 
           <div className="chat-view">
