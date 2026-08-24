@@ -94,6 +94,16 @@ _ACTIVE_SESSION: AgentSession | None = None
 # the right loop from any thread.
 _MAIN_LOOP: asyncio.AbstractEventLoop | None = None
 
+# The live job's context, kept so the dashboard can start a SECOND call in this
+# same worker process. A LiveKit job calls entrypoint once, so without this the
+# only way to place another call is to restart the worker.
+_JOB_CTX = None
+
+# Guards against two calls running at once. The dashboard can be open in several
+# tabs, and a double-click or two tabs both pressing Start would otherwise build
+# two AgentSessions sharing one microphone.
+_CALL_STARTING = False
+
 
 async def _ws_handler(websocket):
     _WS_CLIENTS.add(websocket)
@@ -103,11 +113,47 @@ async def _ws_handler(websocket):
                 msg = json.loads(raw)
             except Exception:
                 continue
-            if msg.get("type") == "end_call" and _ACTIVE_SESSION is not None:
+            kind = msg.get("type")
+            if kind == "end_call" and _ACTIVE_SESSION is not None:
                 print("[dashboard] end_call requested from the browser")
                 asyncio.create_task(_close(_ACTIVE_SESSION))
+            elif kind == "start_call":
+                asyncio.create_task(_start_call_from_dashboard())
     finally:
         _WS_CLIENTS.discard(websocket)
+
+
+async def _start_call_from_dashboard() -> None:
+    """Begin a new call because the dashboard asked for one.
+
+    Every refusal is reported back to the browser rather than only logged: the
+    button is remote, so a silent no-op looks exactly like a broken button.
+    """
+    global _CALL_STARTING
+
+    if _ACTIVE_SESSION is not None:
+        broadcast({"type": "start_refused", "reason": "a call is already in progress"})
+        return
+    if _CALL_STARTING:
+        broadcast({"type": "start_refused", "reason": "a call is already starting"})
+        return
+    if _JOB_CTX is None:
+        # No job has run yet, so there is no room to join and no prewarmed
+        # engine. Nothing sensible to do but say so.
+        broadcast({"type": "start_refused",
+                   "reason": "the agent has no active job — restart the worker"})
+        return
+
+    _CALL_STARTING = True
+    print("[dashboard] start_call requested from the browser")
+    try:
+        await run_call(_JOB_CTX)
+    except Exception as exc:
+        print(f"[dashboard] start_call failed: {type(exc).__name__}: {exc}")
+        broadcast({"type": "start_refused",
+                   "reason": f"{type(exc).__name__}: {exc}"})
+    finally:
+        _CALL_STARTING = False
 
 
 def broadcast(event: dict) -> None:
@@ -587,6 +633,31 @@ async def entrypoint(ctx: JobContext):
         entrypoint._ws_started = True
         asyncio.create_task(_start_ws_server())
 
+    # The job's context is remembered so the dashboard's "Start call" can build
+    # a FRESH session in this same process after one ends. A LiveKit job runs
+    # entrypoint exactly once, so without this the only way to place a second
+    # call is to restart the worker — which is what the button exists to avoid.
+    global _JOB_CTX
+    _JOB_CTX = ctx
+
+    await run_call(ctx)
+
+    # entrypoint must NOT return here. run_call returns as soon as the opening
+    # line has been spoken — the call itself continues on the session's own
+    # tasks — and a LiveKit entrypoint returning is what ends the job and tears
+    # the process down. Before the dashboard could start calls that was
+    # harmless, because the process was meant to end with the one call it was
+    # given. Now it is not: returning would take the ws server down with it and
+    # "Start call" would have nothing left listening.
+    #
+    # So park here for the life of the job. ctx.shutdown() / the worker's own
+    # signal handling still end the process; this only stops it ending early.
+    await asyncio.Event().wait()
+
+
+async def run_call(ctx: JobContext):
+    """One call, start to finish. Separated from `entrypoint` so a second call
+    can be started in the same process (see _ws_handler's "start_call")."""
     session_id = f"{ctx.room.name}:{uuid.uuid4().hex[:8]}"
     broadcast({"type": "call_started", "session_id": session_id})
     engine = ctx.proc.userdata.get("engine") or build_engine()
@@ -679,6 +750,9 @@ async def entrypoint(ctx: JobContext):
         broadcast({"type": "call_ended", "session_id": session_id})
         await asyncio.to_thread(agent.run_learning)
 
+    # Registered per call. `learned_once` is per call too, so a second call
+    # gets its own guard and its own transcript rather than inheriting the
+    # first call's "already done" flag.
     ctx.add_shutdown_callback(_consolidate)
 
     @session.on("close")

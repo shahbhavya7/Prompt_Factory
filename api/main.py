@@ -15,7 +15,12 @@ Run:  uvicorn api.main:app --reload --port ${API_PORT:-8000}
 from __future__ import annotations
 
 import os
+import shutil
+import signal
+import subprocess
+import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -181,6 +186,203 @@ def send_turn(call_id: str, body: TurnRequest):
 # has time, which is usually with no call in flight and often with the voice
 # agent shut down entirely. That is also why these live on this HTTP API rather
 # than on voice_agent.py's websocket, which only exists while a call is running.
+
+
+# ── the voice agent as a child process ──────────────────────────────────────
+#
+# WHY THIS LIVES HERE. The dashboard's "Start call" button is served by Vite and
+# its click travels over voice_agent.py's own websocket — so neither of those
+# can start voice_agent.py, because both must already be up for the button to
+# exist at all. This API is the one piece that IS already running and can spawn
+# it, which is why the button routes through here rather than over the ws.
+#
+# The child is `./run.sh voice`, not `python voice_agent.py console` directly:
+# run.sh activates the conda env, loads .env, brings the database up and checks
+# the KB is populated. Reimplementing that here would be a second copy of the
+# same boot sequence, guaranteed to drift.
+#
+# run.sh `exec`s into python, so the shell is REPLACED by the agent process
+# rather than becoming its parent. That matters for stopping it: the pid we hold
+# is the agent itself, so terminating it actually ends the call rather than
+# orphaning a python child under a dead shell.
+
+_VOICE_PROC: subprocess.Popen | None = None
+_VOICE_LOG = Path("/tmp/sace-voice-agent.log")
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _voice_running() -> bool:
+    return _VOICE_PROC is not None and _VOICE_PROC.poll() is None
+
+
+@app.get("/voice/status")
+def voice_status():
+    """Whether the agent this API started is still alive.
+
+    `exit_code` is surfaced on a dead process so the dashboard can say WHY it
+    is not running — a crash on boot (bad credentials, database down) otherwise
+    looks identical to never having been started.
+    """
+    running = _voice_running()
+    # Also counts agents this API did not spawn, so the dashboard's Stop button
+    # is offered whenever there is actually something to stop — see
+    # _find_voice_pids.
+    external = [p for p in _find_voice_pids()
+                if not (running and p == _VOICE_PROC.pid)]
+    return {
+        "running": running or bool(external),
+        "owned": running,
+        "pid": _VOICE_PROC.pid if running else (external[0] if external else None),
+        "pids": ([_VOICE_PROC.pid] if running else []) + external,
+        "exit_code": (None if running or _VOICE_PROC is None
+                      else _VOICE_PROC.returncode),
+        "log": str(_VOICE_LOG),
+    }
+
+
+@app.post("/voice/start")
+def voice_start():
+    """Spawn `./run.sh voice`, so a call can be placed without a terminal.
+
+    NOTE ON AUDIO: console mode binds the machine's microphone and speakers —
+    the SERVER's, which is only the same machine as the browser's because this
+    is a local demo. This endpoint is not safe to expose on a shared host, and
+    it is a demo convenience rather than a deployment path.
+    """
+    global _VOICE_PROC
+
+    if _voice_running():
+        # Not an error: the button's intent is "I want a live agent", and there
+        # already is one. Reported so the dashboard can say so plainly.
+        return {"started": False, "already_running": True,
+                "pid": _VOICE_PROC.pid, "log": str(_VOICE_LOG)}
+
+    script = _REPO_ROOT / "run.sh"
+    if not script.exists():
+        raise HTTPException(500, f"run.sh not found at {script}")
+    bash = shutil.which("bash")
+    if bash is None:
+        raise HTTPException(500, "bash not found on PATH")
+
+    # Output goes to a file, not a pipe: nothing here ever reads it, and a full
+    # pipe buffer would block the agent mid-call.
+    log = open(_VOICE_LOG, "ab", buffering=0)
+    log.write(f"\n===== started by /voice/start at {time.strftime('%Y-%m-%d %H:%M:%S')} "
+              f"=====\n".encode())
+    _VOICE_PROC = subprocess.Popen(
+        [bash, str(script), "voice"],
+        cwd=str(_REPO_ROOT),
+        stdout=log, stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        # Its own process group, so stopping it cannot signal this API too, and
+        # so a Ctrl-C in the API's terminal does not kill a live call.
+        start_new_session=True,
+    )
+
+    # A boot failure (missing DEEPGRAM_API_KEY, database down) is immediate, and
+    # reporting "started" for a process that is already dead sends the user to
+    # the dashboard to wait for a websocket that will never open. Give it a
+    # moment and check.
+    time.sleep(1.5)
+    if _VOICE_PROC.poll() is not None:
+        tail = ""
+        try:
+            tail = _VOICE_LOG.read_text(errors="replace")[-800:]
+        except Exception:
+            pass
+        code = _VOICE_PROC.returncode
+        _VOICE_PROC = None
+        raise HTTPException(500, f"voice agent exited immediately (code {code}). "
+                                 f"Last output:\n{tail}")
+
+    return {"started": True, "already_running": False,
+            "pid": _VOICE_PROC.pid, "log": str(_VOICE_LOG)}
+
+
+def _stop_pid(pid: int) -> bool:
+    """SIGINT one agent and wait for it. SIGKILL only if it will not go.
+
+    SIGINT rather than SIGKILL because the agent's shutdown callback runs the
+    learning loop and persists the transcript — killing outright throws away
+    the call that just happened.
+    """
+    try:
+        # Signal the whole process group: run.sh execs into python, so the group
+        # is the agent and any helper it spawned.
+        os.killpg(os.getpgid(pid), signal.SIGINT)
+    except (ProcessLookupError, PermissionError):
+        return False
+
+    # Learning can take a few seconds, so give it real time before escalating.
+    deadline = time.time() + 25
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.3)
+
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    return True
+
+
+def _find_voice_pids() -> list[int]:
+    """Every voice_agent.py on this machine, whoever started it.
+
+    `_VOICE_PROC` only knows about agents THIS API spawned. One started from a
+    terminal (./run.sh voice) is invisible to it — and that is the common case,
+    so a Stop button that only handled its own children would silently do
+    nothing exactly when it looked most broken. `pgrep -f` finds them all.
+    """
+    pids: list[int] = []
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", "voice_agent.py"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+        for line in out.split():
+            try:
+                pid = int(line)
+            except ValueError:
+                continue
+            # Never signal ourselves, whatever the pattern matched.
+            if pid != os.getpid():
+                pids.append(pid)
+    except Exception as exc:
+        print(f"[voice] pgrep failed: {type(exc).__name__}: {exc}")
+    return pids
+
+
+@app.post("/voice/stop")
+def voice_stop():
+    """Stop EVERY voice agent on this machine, not only the one this API
+    spawned — see _find_voice_pids for why that distinction matters.
+
+    Different from the dashboard's End-call button, which goes over the
+    websocket: that ends the CALL and runs the learning loop, leaving the agent
+    up for the next one. This is the blunter one — it ends the process and frees
+    the websocket port.
+    """
+    global _VOICE_PROC
+
+    pids = _find_voice_pids()
+    # The tracked child may already be gone; including it anyway is harmless
+    # (_stop_pid reports False for a pid that no longer exists) and covers the
+    # case where pgrep's pattern misses it.
+    if _VOICE_PROC is not None and _VOICE_PROC.poll() is None:
+        if _VOICE_PROC.pid not in pids:
+            pids.append(_VOICE_PROC.pid)
+
+    if not pids:
+        _VOICE_PROC = None
+        return {"stopped": False, "killed": [], "reason": "no voice agent running"}
+
+    killed = [pid for pid in pids if _stop_pid(pid)]
+    _VOICE_PROC = None
+    return {"stopped": bool(killed), "killed": killed, "count": len(killed)}
 
 
 @app.get("/cache/stats")

@@ -201,6 +201,27 @@ button {
   color: #fff;
 }
 
+/* Two actions side by side in the header — the primary one and a quieter
+   companion (start a call / stop the agent). */
+.btn-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+/* The secondary action. Deliberately understated: stopping the agent is
+   occasional housekeeping, not the thing the header is for, and it should not
+   compete with the primary button for a click. */
+.btn-ghost {
+  background: transparent;
+  color: var(--color-ink-soft);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--color-surface-muted);
+  color: var(--color-ink);
+}
+
 .btn-primary:hover:not(:disabled) {
   background: var(--color-accent-ink);
   border-color: var(--color-accent-ink);
