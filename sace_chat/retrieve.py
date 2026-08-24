@@ -118,6 +118,18 @@ class Retrieval:
     opt_out: bool = False
     notes: list = dc_field(default_factory=list)
 
+    # A cached answer for this turn, if one was close enough — see
+    # answer_cache.lookup. When set, the caller may serve `cache_hit["reply"]`
+    # and skip assembly and the LLM entirely. Retrieval still ran (the intent
+    # and the vector were needed to find this at all), so `governing` is
+    # populated too and the turn is still auditable.
+    cache_hit: dict | None = None
+
+    # The caller-message vector this turn was computed from, exposed so a
+    # completed turn can be stored in the cache without embedding the same
+    # string a second time. This is the whole reason a cache miss is cheap.
+    message_vec: list | None = dc_field(default=None, repr=False)
+
     @property
     def rules(self) -> list:
         """Everything in scope, governing first — for grounding and the UI."""
@@ -274,6 +286,7 @@ def retrieve(
     router: IntentRouter | None = None,
     table: str = "chunks",
     precedence=None,
+    use_cache: bool = True,
 ) -> Retrieval:
     """`precedence` is an optional (intent, message) -> (intent, opt_out) hook,
     applied to the detected label before the rule is fetched — policy lives in
@@ -300,6 +313,8 @@ def retrieve(
         intent_similarity=round(intent_sim, 3),
         intent_ranked=[(i, round(s, 3)) for i, s in ranked[:4]],
         query_text=query_text,
+        # Handed out so a completed turn can be cached without re-embedding.
+        message_vec=list(message_vec),
     )
 
     if precedence is not None:
@@ -310,6 +325,41 @@ def retrieve(
             result.notes.append(f"precedence: intent {intent!r} -> {effective!r}")
             intent = effective
             result.intent = effective
+
+    # The cache probe goes HERE, and the position is deliberate on both sides:
+    #
+    #   * AFTER precedence, so a message that policy re-routed to dnc/abuse is
+    #     seen by the never-cache list under its effective intent, not the
+    #     router's softer first guess.
+    #   * BEFORE the pool fetch, so a hit skips that query too.
+    #
+    # The lookup is additionally gated on the question currently pending (see
+    # answer_cache's trailing-question gate): most diversion replies end by
+    # returning to whatever was already asked, so an entry is only eligible on a
+    # turn where that same question is still open.
+    #
+    # It reuses `message_vec`, already computed above — a miss therefore costs
+    # one small extra query, not an embedding round-trip. See answer_cache.
+    if use_cache and not result.opt_out:
+        try:
+            from sace_chat import answer_cache
+
+            # The pending question comes from `state`, which retrieve already
+            # has — so the gate costs nothing extra on the hot path.
+            hit = answer_cache.lookup(
+                conn, message_vec, intent,
+                pending=answer_cache.pending_fingerprint(state),
+            )
+            if hit is not None:
+                result.cache_hit = hit
+                result.notes.append(
+                    f"cache hit {hit['id']} (similarity {hit['similarity']:.3f}, "
+                    f"pending {hit['pending_fingerprint'] or 'none'}) — "
+                    f"reusing a confirmed reply, skipping the LLM"
+                )
+        except Exception as exc:
+            # An optimisation must never be able to fail a turn.
+            result.notes.append(f"cache lookup failed, using the full path: {exc}")
 
     if intent is not None:
         chunk = _fetch_by_intent(conn, intent, pool_vec, table)

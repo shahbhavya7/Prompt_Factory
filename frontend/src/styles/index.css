@@ -865,3 +865,66 @@ button {
   align-self: flex-start;
   margin-top: var(--space-3);
 }
+
+/* ── cache hit ────────────────────────────────────────────────────────────
+   A turn served from the reply cache skipped assembly and the LLM entirely,
+   so it is marked plainly rather than left looking like an ordinary turn. */
+.learning-panel--cached {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent-soft);
+}
+
+.cache-banner {
+  margin-bottom: var(--space-3);
+  padding: 9px 12px;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: var(--color-accent-ink);
+  background: var(--color-accent-soft);
+  border-radius: var(--radius-sm);
+}
+
+.cache-banner strong {
+  font-weight: 650;
+}
+
+/* Which path produced a reply — cache replay vs the full pipeline. Shown on
+   every Maya turn so the transcript never hides that a reply was reused. */
+.path-chip {
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.path-chip--cache {
+  color: var(--color-accent-ink);
+  background: var(--color-accent-soft);
+}
+
+.path-chip--full {
+  color: var(--color-ink-soft);
+  background: var(--color-surface-muted);
+}
+
+/* A turn that was SAVED into the reply cache. Distinct from the cache-hit
+   chip: this one is about the next call being fast, not this one.
+   Green, not red — saving is the good outcome, and this was previously on the
+   --color-bad palette, which made a successful save read as an error. */
+.path-chip--saved {
+  color: var(--color-good);
+  background: var(--color-good-soft);
+}
+
+/* A turn that was NOT saved, with the reason on the tooltip. Deliberately the
+   quietest chip on the row: it is the common case (most turns are flow turns
+   and can never be cached), so it has to be findable without being noise. */
+.path-chip--notsaved {
+  color: var(--color-ink-faint);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  font-weight: 500;
+  cursor: help;
+}

@@ -4,7 +4,7 @@ Four changes, all aimed at the same goal: keep the prompt small and
 built-fresh-every-time (this is what we mean by "dynamic prompting"),
 while making the lookup behind it faster and smarter.
 
-**Status: 1 and 2 are DONE. 3 and 4 are still just ideas, not started.**
+**Status: 1, 2 and 4 are DONE. 3 is still just an idea, not started.**
 This doc is kept as a record of the reasoning, not rewritten away once
 something ships — see the "what actually happened" note under each
 finished item for what changed and how it was checked.
@@ -110,6 +110,33 @@ answer we already know is good.
 needs its own small storage for "remembered answers" and a "how close
 counts as close enough" check, plus the safety rule above.
 
+**What actually happened:** built as `sace_chat/answer_cache.py` (table
+`answer_cache`), and it works — a repeated question is answered in about
+**256ms instead of about 1935ms, an 87% cut**. Full detail in
+[ARCHITECTURE.md §9](ARCHITECTURE.md#9-the-reply-cache-sace_chatanswer_cachepy).
+
+Three things worth recording, because they were not obvious up front:
+
+- **The "worst case adds latency" worry turned out to be avoidable entirely.**
+  The trick is that the lookup reuses the message embedding retrieval already
+  computes every turn, instead of embedding the question itself. So a miss
+  costs one small extra database query — measurably smaller than the normal
+  run-to-run variance of the model call — rather than a whole extra
+  embedding round-trip. Had the cache embedded its own query, every miss
+  would have paid ~100-300ms for nothing.
+- **"How close counts as close enough" had to be measured, not guessed.**
+  Two guessed values were both wrong, in opposite directions: the first was
+  so strict the cache never fired at all, and the second rejected about half
+  of genuine re-asks. Measuring where real re-asks land (0.76-0.88) versus
+  where different questions land (0.12-0.54) showed a clean empty gap, and
+  the bar went in the middle of it.
+- **The safety rule needed more than the three cases named above.** Beyond
+  do-not-call, abuse and emergencies, the cache also has to refuse the
+  *first turn of any call* and every conversational-flow rule — their right
+  answer depends on where in the call they happen, not on what was asked. A
+  greeting was observed being stored as the answer to "are you a robot?"
+  before that exclusion existed.
+
 ---
 
 ## How these fit together
@@ -122,7 +149,8 @@ relevant right now.
 
 **Suggested order:** do 1 and 2 first (small, safe, quick wins) — **done.**
 Hold off on 3 until we actually see a section getting large — **still
-holding off; not started.** Do 4 once 1–2 are in, since it's the biggest
-change and benefits from the lookup underneath it already being fast and
-clean — **1–2 are in, so 4 is unblocked whenever it's prioritized; not
-started yet.**
+holding off; not started, and now more relevant than before: the pool has
+grown to 36 learned rules with visible near-duplicate drift (five rules
+about caller frustration, four about questioning the call's legitimacy).**
+Do 4 once 1–2 are in, since it's the biggest change and benefits from the
+lookup underneath it already being fast and clean — **done, see above.**

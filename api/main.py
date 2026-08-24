@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
-from sace_chat import manager, review
+from sace_chat import answer_cache, manager, review
 from sace_chat.consolidator import run_learning_loop
 from sace_chat.db import engine as db_engine
 from sace_chat.db import init_db, record_call_transcript
@@ -181,6 +181,19 @@ def send_turn(call_id: str, body: TurnRequest):
 # has time, which is usually with no call in flight and often with the voice
 # agent shut down entirely. That is also why these live on this HTTP API rather
 # than on voice_agent.py's websocket, which only exists while a call is running.
+
+
+@app.get("/cache/stats")
+def cache_stats():
+    """Entries, cumulative hits, and the similarity bar — for the dashboard."""
+    return answer_cache.stats()
+
+
+@app.post("/cache/clear")
+def cache_clear():
+    """Drop every cached answer. The pool and the rules are untouched; entries
+    rebuild themselves from the next few calls."""
+    return {"cleared": answer_cache.clear()}
 
 
 @app.get("/review/pending")

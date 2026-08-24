@@ -217,6 +217,22 @@ def approve(
         session.delete(row)
         session.commit()
 
+        # A new rule changes what SHOULD be said in situations the cache may
+        # already hold confirmed answers for — those answers were validated
+        # against the old rule set, so any of them in this rule's section is now
+        # suspect. Clearing the section is the cheap, safe choice: the entries
+        # rebuild themselves on the next few calls, whereas a stale entry would
+        # keep serving the pre-approval answer and make the new rule look like
+        # it had no effect (exactly the "I approved it but nothing changed"
+        # failure this system should never produce).
+        try:
+            from sace_chat.answer_cache import invalidate_for_intent
+
+            dropped = invalidate_for_intent(final_intent)
+        except Exception as exc:  # pragma: no cover - optimisation path
+            print(f"[review] cache invalidation failed: {type(exc).__name__}: {exc}")
+            dropped = 0
+
         unroutable = bool(final_intent) and final_intent not in set(KNOWN_INTENTS)
         return {
             "chunk_id": chunk.id,
@@ -225,6 +241,7 @@ def approve(
             "learned_kind": final_kind,
             "cue": final_cue,
             "text": final_text,
+            "cache_entries_invalidated": dropped,
             # Surfaced so the UI can say so plainly: the rule is stored, but
             # until this label has exemplars in kb.INTENT_EXEMPLARS the router
             # cannot classify a caller into it, so nothing will retrieve it.

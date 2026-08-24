@@ -47,6 +47,7 @@ from livekit.agents import (
     llm,
 )
 from livekit.agents.voice.agent_session import InterruptionOptions, TurnHandlingOptions
+from livekit.agents.voice.turn import PreemptiveGenerationOptions
 from livekit.plugins import deepgram, openai, silero
 
 from sace_chat import manager
@@ -223,6 +224,11 @@ class SaceVoiceAgent(Agent):
             "tts_ttfb_ms": None,
             "terminal": bool(governing and governing.chunk.terminal),
             "notes": list(ctx["notes"]),
+            # A cached answer for this turn, if retrieval found one. The reply
+            # is served by Engine.prepare_reply (in llm_node) without a
+            # completion call; recorded here so the latency line and the
+            # dashboard can say so.
+            "cache_hit": ctx["retrieval"].cache_hit,
         }
 
         # Live proof, the moment memory is searched — before the model has even
@@ -248,7 +254,14 @@ class SaceVoiceAgent(Agent):
         # The framework builds the system message from `instructions` on each LLM
         # call, so this is the documented injection point. llm_node below also
         # verifies it actually landed, and injects it directly if not.
-        self.update_instructions(ctx["system_prompt"])
+        #
+        # AWAITED: Agent.update_instructions is a coroutine in 1.6.7. Calling it
+        # without await raised "coroutine was never awaited" and left the
+        # instructions un-updated — silently, because an un-awaited coroutine
+        # does not propagate an error. _ensure_sace_system in llm_node was
+        # covering for it, which is why the prompt still landed and nothing
+        # looked broken.
+        await self.update_instructions(ctx["system_prompt"])
 
         # ── barge-in policy ──
         # Terminal rules (dnc, abuse, elsewhere, busy, the closings) require their
@@ -302,6 +315,22 @@ class SaceVoiceAgent(Agent):
             yield reply
             return
 
+        # NO PENDING TURN. The only legitimate reason to be here is the headless
+        # harness, which drives _delegate_llm on purpose. In a live call it means
+        # something generated a reply without going through
+        # on_user_turn_completed — preemptive generation is the known cause (see
+        # the PreemptiveGenerationOptions note where the session is built) — and
+        # the reply about to be spoken has had NO governing rule, no assembled
+        # prompt, no grounding check and no cache involvement.
+        #
+        # Shouted about rather than logged quietly: this failure is invisible
+        # from the transcript (the replies still sound right) and cost several
+        # debugging rounds once. The dashboard showed "full pipeline · grounded"
+        # for turns that never touched the pipeline.
+        print("  [pipeline] WARNING: llm_node reached with no pending turn — this "
+              "reply is being generated OFF-PIPELINE (no governing rule, no "
+              "grounding check, no answer cache). Check that preemptive "
+              "generation is disabled.")
         async for chunk in self._delegate_llm(chat_ctx, tools, model_settings):
             yield chunk
 
@@ -414,12 +443,22 @@ class SaceVoiceAgent(Agent):
             f"gov={(gov.chunk.id if gov else '-'):<26} "
             f"tok={pending['assembled_tokens']:>5} "
             f"cos={verdict['governing_cosine']:.3f} "
-            f"{verdict['outcome']:<11} | "
+            f"{('CACHED' if pending.get('cache_hit') else verdict['outcome']):<11} | "
             f"stt {_fmt_ms(pending['stt_ms'])}ms  "
             f"ctx {_fmt_ms(pending['context_ms'])}ms  "
             f"ttft {_fmt_ms(pending['llm_ttft_ms'])}ms  "
             f"ttfb {_fmt_ms(pending['tts_ttfb_ms'])}ms  "
             f"= {total_ms:5.0f}ms"
+            + (f"  ⚡ cache hit {pending['cache_hit']['similarity']:.3f}"
+               if pending.get("cache_hit") else "")
+            + (f"  💾 saved {verdict['cache_stored']['id']}"
+               if (verdict.get("cache_stored") or {}).get("stored") else "")
+            # And why NOT, when it was not. The cache filling up slowly looks
+            # identical to the cache being broken unless the refusal says which
+            # gate turned the turn away.
+            + (f"  ⃠ not saved: {verdict['cache_stored']['reason']}"
+               if (verdict.get("cache_stored") is not None
+                   and not verdict["cache_stored"].get("stored")) else "")
         )
         for note in pending["notes"]:
             print(f"           note: {note}")
@@ -430,7 +469,14 @@ class SaceVoiceAgent(Agent):
                "reply_text": reply_text, "outcome": verdict["outcome"],
                "governing": gov.chunk.id if gov else None,
                "grounding_cosine": verdict["governing_cosine"],
-               "latency_ms": total_ms, "prompt_sent": pending["prompt_sent"]}
+               "latency_ms": total_ms, "prompt_sent": pending["prompt_sent"],
+               "cache_hit": bool(pending.get("cache_hit")),
+               "cache_similarity": (pending["cache_hit"]["similarity"]
+                                    if pending.get("cache_hit") else None),
+               # Whether this turn was SAVED for future reuse, and if not, why.
+               # Set by Engine._maybe_cache on the verdict prepare_reply
+               # returned; absent on a turn that never reached it.
+               "cache_stored": verdict.get("cache_stored")}
         self.turn_log.append(row)
 
         # Completes the story the "retrieval" event started: the reply that
@@ -567,7 +613,31 @@ async def entrypoint(ctx: JobContext):
         # is deprecated in 1.6.7 (removed in v2.0) in favour of this; the
         # per-reply `allow_interruptions=False` on generate_reply() is NOT
         # deprecated and is what suppresses interruption on terminal rules.
-        turn_handling=TurnHandlingOptions(interruption=InterruptionOptions(enabled=True)),
+        turn_handling=TurnHandlingOptions(
+            interruption=InterruptionOptions(enabled=True),
+            # PREEMPTIVE GENERATION MUST STAY OFF, and this is not a tuning
+            # choice — it is load-bearing for correctness.
+            #
+            # It defaults to enabled=True in livekit-agents 1.6.7. When it
+            # fires, AgentActivity.on_preemptive_generation calls _generate_reply
+            # directly on the first partial transcript, BYPASSING
+            # on_user_turn_completed entirely. That is where this agent does all
+            # of its work: SACE retrieval, prompt assembly, and setting
+            # self._pending. So llm_node then runs with _pending still None,
+            # falls through to _delegate_llm, and the FRAMEWORK's raw LLM answers
+            # the caller — with no governing rule, no assembled prompt, no
+            # grounding check, no answer-cache lookup or store.
+            #
+            # It fails quietly, which is what makes it dangerous: replies still
+            # sound plausible because the instructions are on the agent, so the
+            # only symptoms are `ttft —ms` and a null cache field in the turn
+            # row. Observed live: every turn of a call answered off-pipeline
+            # while the dashboard showed "full pipeline · grounded".
+            #
+            # Re-enabling it would need llm_node to be able to rebuild the whole
+            # turn context itself, which defeats the point of preempting.
+            preemptive_generation=PreemptiveGenerationOptions(enabled=False),
+        ),
     )
 
     global _ACTIVE_SESSION

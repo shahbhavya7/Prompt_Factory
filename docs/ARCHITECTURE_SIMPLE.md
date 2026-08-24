@@ -116,6 +116,46 @@ dashboard side makes a decision; it just narrates what already happened.
                      └───────────────────────┘
 ```
 
+## Skipping the work when we already know the answer
+
+Some things get asked over and over — "is this recorded?", "do I have a
+copay?". Doing the whole process again each time is wasted effort, because we
+already worked out the right answer and already checked it was right.
+
+So once a reply has passed the grounding check, we save the pair: what the
+caller asked → what we correctly answered. If a later caller asks close enough
+to the same thing, we just say the saved answer. **About 250ms instead of about
+1900ms.**
+
+```mermaid
+flowchart LR
+    A["caller says
+    something"] --> B["turn it into
+    a vector
+    (needed anyway)"]
+    B --> C{"have we answered
+    this before?"}
+    C -- "yes, close enough" --> D["say the saved
+    answer — done"]
+    C -- "no" --> E["the full process:
+    find the rule, ask the AI,
+    check the reply"]
+    E --> F["say it"]
+    F -.->|"if it passed the check,
+    save it for next time"| C
+```
+
+**Why a 'no' costs almost nothing:** the vector in step 2 is something the
+normal process already builds on every turn — so checking the saved answers
+reuses it instead of redoing it. A miss is one extra quick database lookup,
+smaller than the normal variation between turns. If we had built the vector
+just for the cache, every miss would have wasted real time.
+
+**What never gets the shortcut**, no matter how often it's said: do-not-call
+requests, abusive callers, medical emergencies, anything that ends the call,
+the first thing said on a call, and any reply that mentioned something specific
+to that caller. Those always go through the full process, every time.
+
 ## Key numbers
 
 | | |
@@ -126,6 +166,8 @@ dashboard side makes a decision; it just narrates what already happened.
 | Grounding floor | cosine ≥ 0.45 against the governing rule |
 | Duplicate-rule bar | cosine > 0.72, compared only against rules in the same section |
 | Regeneration budget | 1 retry, with an explicit correction |
+| Reused-answer bar | cosine ≥ 0.68 (measured: same question 0.76–0.88, different question 0.12–0.54) |
+| Reused answer, cost | ~250ms vs ~1900ms for the full process (87% less) |
 
 Full detail (every function, every table column, every edge case) is in
 [ARCHITECTURE.md](ARCHITECTURE.md). This page is the one-screen version.

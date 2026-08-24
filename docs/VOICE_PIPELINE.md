@@ -107,6 +107,61 @@ Why this matters:
   for, we catch it and ask again — this is what keeps the agent from
   going off-script.
 
+## Reusing an answer we've already given
+
+Callers ask the same handful of things constantly — "is this recorded?", "do I
+have a copay?". Running the whole process again each time is wasted work: we
+already found the right rule, already had the AI phrase it, and already checked
+the phrasing was faithful to the rule.
+
+So whenever a reply passes that final check, we save it alongside the question
+that produced it. If a later caller asks close enough to the same thing, Maya
+says the saved reply straight away — no rule lookup, no asking the AI, no
+checking. **Roughly 250ms instead of roughly 1900ms.**
+
+```mermaid
+flowchart LR
+    Said["what the
+    caller said"] --> Vec["turn it into a vector
+    — which the normal
+    process does anyway"]
+    Vec --> Seen{"have we already
+    answered this?"}
+    Seen -- "yes, close enough" --> Reuse["say the saved reply
+    (~250ms)"]
+    Seen -- "no" --> Full["the full process
+    (~1900ms)"]
+    Full --> Say["say it"]
+    Say -.->|"passed the check?
+    save it for next time"| Seen
+    Reuse --> Done(["caller hears it"])
+    Say --> Done
+```
+
+**The important part is what a "no" costs.** The vector in step two is something
+the normal process builds on every single turn anyway, to work out which rule
+applies. Checking the saved answers reuses that same vector rather than
+computing a new one — so a miss costs one extra quick database lookup, less than
+the normal turn-to-turn variation. Had we computed a vector specially for this
+check, every miss would have added real delay to make the occasional hit
+faster, which would have been a bad trade.
+
+**Some things never take the shortcut**, however many times they're said:
+
+- do-not-call requests, abusive callers, medical emergencies
+- anything that ends the call
+- the first thing said on a call (there's no context yet to tell what it means)
+- the greeting and identity-check steps, where the right reply depends on where
+  in the call you are rather than on what was asked
+- any reply that mentioned something specific to that caller — a name, a
+  county, a number they gave
+
+Those always run the full process, every time, with the full check.
+
+The dashboard labels every reply either **⚡ cache** or **⚙ full pipeline**, so
+it's always visible which one happened — a reused reply is never shown as if it
+had just been generated.
+
 ## After the call: memory proposes, a person decides
 
 Once the call ends, we look back at the whole conversation to see if

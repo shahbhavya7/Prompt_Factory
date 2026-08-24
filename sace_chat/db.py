@@ -118,6 +118,53 @@ class CallTranscriptRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class AnswerCacheRow(Base):
+    """A confirmed question->reply pair, replayable without an LLM call.
+
+    Written only after a turn was validated as `grounded`, so every row is a
+    reply this system already accepted once. On a later turn, a caller message
+    whose embedding is within CACHE_THRESHOLD of `question` serves `reply`
+    verbatim and skips both prompt assembly and the LLM.
+
+    Scoped by `intent` for the same reason the rule pool is (see
+    retrieve._fetch_by_intent): a cached "caller is busy" answer must never be
+    reachable from a "caller wants a callback" turn. NULL intent is the general
+    section, exactly as in `chunks`.
+
+    `governing_rule_id` is kept so a rule change can invalidate everything
+    derived from it — without it, editing a rule would leave stale cached
+    replies quoting the old wording, which is the classic cache-coherence bug
+    and the one most likely to bite here.
+    """
+
+    __tablename__ = "answer_cache"
+
+    id = Column(String, primary_key=True)
+    # The caller's message, and the vector it is matched by.
+    question = Column(Text, nullable=False)
+    embedding = Column(Vector(EMBEDDING_DIM), nullable=False)
+    # The reply to replay, verbatim.
+    reply = Column(Text, nullable=False)
+
+    intent = Column(String, nullable=True, index=True)
+    governing_rule_id = Column(String, nullable=True, index=True)
+    grounding_cosine = Column(Float, nullable=True)
+
+    # The question that was PENDING when this reply was produced, fingerprinted
+    # (see answer_cache.question_fingerprint). Most diversion replies end by
+    # returning to whatever Maya had already asked, so the reply is only correct
+    # on a turn where the same question is still pending — this column is what
+    # the serve path matches on to guarantee that. Empty string for a reply that
+    # ends on no question, which is reusable anywhere.
+    pending_fingerprint = Column(String, nullable=False, default="", index=True)
+
+    # Provenance and usefulness, for pruning and for the dashboard.
+    source_session_id = Column(String, nullable=True)
+    hit_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    last_hit_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class NeedsReviewRow(Base):
     """The human review queue: every candidate rule that did NOT go straight
     into the pool, for any reason, plus the context a person needs to judge it.
@@ -261,6 +308,47 @@ def init_db():
         conn.execute(
             text("CREATE INDEX IF NOT EXISTS ix_needs_review_status ON needs_review (status)")
         )
+
+        # The reply cache is read on the hot path of every turn, so its intent
+        # filter must not be a sequential scan — same reasoning as
+        # ix_chunks_intent above. No index on `embedding` itself, deliberately
+        # and for the same reason as chunks: the per-section row count is small,
+        # an exact scan over it is fast, and an approximate index combined with
+        # a strict WHERE can under-return (see the chunks note).
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_answer_cache_intent ON answer_cache (intent)")
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_answer_cache_rule "
+                 "ON answer_cache (governing_rule_id)")
+        )
+        # Added after the first rows existed. The default matters: '' means "ends
+        # on no question", which is the permissive value, so a pre-existing row
+        # would become servable on ANY pending question — the exact mistake the
+        # column exists to prevent. Existing rows are dropped instead; the cache
+        # is an optimisation and rebuilds itself within a few calls.
+        if not _has_answer_cache_column(conn, "pending_fingerprint"):
+            conn.execute(text(
+                "ALTER TABLE answer_cache ADD COLUMN IF NOT EXISTS "
+                "pending_fingerprint VARCHAR NOT NULL DEFAULT ''"
+            ))
+            conn.execute(text("DELETE FROM answer_cache"))
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_answer_cache_pending "
+                 "ON answer_cache (pending_fingerprint)")
+        )
+
+
+def _has_answer_cache_column(conn, column: str) -> bool:
+    return bool(
+        conn.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'answer_cache' AND column_name = :c"
+            ),
+            {"c": column},
+        ).scalar()
+    )
 
 
 def _has_column(conn, column: str) -> bool:

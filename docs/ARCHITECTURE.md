@@ -369,7 +369,7 @@ Written by `record_call_transcript` on session end: `session_id`, `source`, the 
 | `Engine.prepare_reply(state, history, user_message, ctx=None, validate_only=False) -> (reply_text, debug)` | **The voice path's turn.** The pre-speech half of `step()`: retrieves/assembles (via `build_turn_context`, unless `ctx` is already supplied), decides, scores, judges, and regenerates once if needed — but does **not** mutate `state`/`history`. Returning the pending decision lets `voice_agent.py` persist the turn only after the audio has actually finished playing. | reads `chunks`; calls embedder + LLM |
 | `Engine.validate_reply(reply_text, retrieval) -> dict` | **Log-only** scoring of a reply that has *already been spoken* — used by the voice path's terminal-rule turns, where the reply is generated and spoken directly by LiveKit's own streaming LLM and there is no opportunity to regenerate. Returns the same verdict shape `_judge` produces, so a bad turn is visible after the fact in `turns.validation_outcome` rather than silently lost. | calls embedder |
 | `Engine.step(state, history, user_message) -> (reply, state, debug)` | **The chat-app turn.** See ordering below. | reads `chunks`; calls embedder + LLM; **mutates `state` and `history`** |
-| `Engine._judge(scores, governing, retrieval) -> (outcome, reason)` | Returns `grounded` / `ungrounded` / `spliced` / `no-rule` / `unscored`, plus a regeneration reason (empty = accept). **Splice is checked before threshold**, because a spliced reply can still have a respectable governing cosine. | pure |
+| `Engine._judge(scores, governing, retrieval) -> (outcome, reason)` | Returns `grounded` / `ungrounded` / `spliced` / `no-rule` / `unscored`, plus a regeneration reason (empty = accept). **The grounding floor is checked first**, then splice — and splice requires the reference rule to beat the governing one by `SPLICE_MARGIN` (0.08), not merely to tie it. See *The splice margin* below. | pure |
 | `_rule_debug(rule, scores) -> dict` | Flattens a rule + its score for the UI/dashboard. | pure |
 | `no_rule_decision(user_message, retrieval, elapsed_ms=0.0) -> dict` | Deterministic polite-terminal fallback when retrieval finds no governing rule at all — the agent politely closes rather than improvising from an unrelated nearest neighbour. Used by both `step()` and `prepare_reply()` when `retrieval.governing is None`. | pure |
 
@@ -607,6 +607,8 @@ A further structural safety property sits underneath the gates: **a learned rule
 
 - **Intent classification is 17/18 on held-out phrasings.** `"I'm sick of getting these calls every week"` classifies as `dnc` (0.610) over `frustration` (0.574). The utterance is genuinely ambiguous in English, and the error direction is the conservative one for outreach compliance — but it does end a call that a human might have continued. Two other held-out misses were fixed by adding exemplars, which means the exemplar sets are tuned to the probe set I wrote and their true generalisation is unmeasured.
 
+- **The splice check needs a margin, and choosing it is a real trade-off.** The check originally read `ref_cos > governing_cos` — any reference rule outscoring the governing one, by any amount, was a splice, and it ran *before* the grounding floor. That is too eager by construction: reference rules are in the prompt precisely because they are topically adjacent, so on a short reply ("Yes, that's right.") the ordering between two adjacent rules is close to noise. A reply at 0.85 to its governing rule was rejected because a reference rule hit 0.86. Measured on live calls it fired on roughly a third of turns, each one paying for a regeneration it did not need and never reaching the answer cache — while the reply was almost always correct. The floor is now checked first, and splice requires `ref_cos - governing_cos >= SPLICE_MARGIN` (0.08). The residual risk runs the other way: a genuine splice whose margin is under 0.08 is now accepted as `grounded`. That is the intended direction — the grounding floor still has to be cleared either way, so what changed is only how an *already-traceable* reply is labelled.
+
 - **The `_judge` splice check only sees rules that were retrieved.** It compares the reply against GOVERNING and REFERENCE. Content invented from the model's own priors, or lifted from `RECENT TURNS`, scores low against everything in scope and is caught by the grounding threshold — but content that happens to paraphrase the governing rule while adding an unauthorised subject can clear 0.45 and pass.
 
 - **One regeneration only, and a failure after it is reported rather than blocked.** If the second attempt still scores as ungrounded or spliced, the reply is delivered anyway with a note in `debug["notes"]` and an amber banner in the UI. Nothing suppresses a bad reply.
@@ -777,3 +779,175 @@ Decisions are optimistic — the row leaves the list immediately so a long queue
 - **Editing a queued rule does not re-run the gates.** A human can rewrite a candidate into something that *would* have been caught as a duplicate or a conflict, and it will be inserted anyway. That is deliberate — the human is meant to outrank the gates — but it means the near-duplicate drift the gates defend against can still be introduced by hand.
 - **Approving a conflict leaves both rules live.** There is still no update or supersede path; the card says so, but the reviewer's only options are add-anyway or discard. Editing the *existing* rule is not possible from this queue.
 - **The queue is unbounded and unpaginated** past `limit=200`. A long unattended stretch of calls will accumulate rows faster than anyone drains them, and near-duplicate proposals across calls are not collapsed in the queue itself.
+
+---
+
+## 9. The reply cache (`sace_chat/answer_cache.py`)
+
+`CHANGES_TO_BE_APPLIED.md` item 4, implemented. Once a reply has been generated **and** validated as grounded, the pair (what the caller said → what we correctly answered) is stored. A later caller saying nearly the same thing gets that reply directly: no prompt assembly, no completion call, no grounding check, no regeneration budget.
+
+**Measured on this pipeline: a hit costs ~256ms against ~1935ms for the full path — an 87% reduction.**
+
+### The flow
+
+One embedding, computed once, feeds three consumers: intent classification, the cache probe, and the pool query. That sharing is the whole reason a miss is cheap — follow the **thick blue** edge from `C2`.
+
+The **green** path is a hit: it leaves the turn loop at `E1` and returns, skipping everything in the dashed box. The **grey dashed box** is exactly what a hit avoids — the pool query, assembly, the completion call, grounding, and the regeneration budget. The **pink** edge at the bottom is the write that makes the next identical question fast.
+
+```mermaid
+%% LR, not TB: the point of the picture is that the cache path is SHORT and the
+%% full path is LONG, which only reads as a length if the flow runs sideways.
+flowchart LR
+    START(["caller<br>message"])
+
+    subgraph SHARED["ONE embedding, three consumers"]
+        direction TB
+        C2["<b>embed the message</b><br>~100-300ms<br><i>the turn's ONLY embedding</i>"]
+        C3["IntentRouter.detect<br>+ resolve_precedence"]
+    end
+
+    GATE{"cacheable<br>intent?"}
+    PROBE["<b>answer_cache.lookup</b><br>reuses the vector — embeds NOTHING<br>1 query, intent-scoped<br><i>single-digit ms</i>"]
+    CACHEDB[("answer_cache")]
+    SIM{"sim ≥ 0.68 ?"}
+
+    E1["<b>cached_decision</b><br>replay verbatim<br>0 LLM calls · 0 tokens"]
+    OUT(["reply<br>to caller"])
+
+    subgraph FULL["THE FULL PATH — what a hit skips · ~1900ms"]
+        direction TB
+        F1["fetch rule<br>pgvector over chunks"]
+        F2["build_turn_prompt<br>~1.2k tokens"]
+        F3["llm.chat_json<br><b>~1500-2000ms</b>"]
+        F4{"grounded?"}
+        F5["regenerate ONCE"]
+        F6["terminal check"]
+    end
+
+    CHECK{"<b>is_cacheable?</b><br>grounded · not regenerated<br>substantive opener · not terminal/critical<br>intent-routed (not intent=None) · no fields<br>no caller name · trailing q == pending q"}
+    STORE["<b>store</b><br>reuses the same vector<br>near-duplicate UPDATEs"]
+    SKIP["not cached<br><i>reason in notes</i>"]
+
+    %% One edge per line, deliberately: mermaid's linkStyle indices are
+    %% positional, and a chained "A --> B --> C" silently counts as two, which
+    %% makes every index after it wrong.
+    START --> C2
+    C2 --> C3
+    C3 --> GATE
+    GATE -->|"no — dnc/abuse"| F1
+    GATE -->|"yes"| PROBE
+    C2 ==>|"same vector"| PROBE
+    CACHEDB -.->|"read"| PROBE
+    PROBE --> SIM
+    SIM ==>|"<b>HIT</b> · ~256ms"| E1
+    E1 ==> OUT
+    SIM -->|"miss"| F1
+    F1 --> F2
+    F2 --> F3
+    F3 --> F4
+    F4 -->|"no"| F5
+    F5 -.->|"1 retry"| F3
+    F4 -->|"yes"| F6
+    F6 --> OUT
+    F6 --> CHECK
+    CHECK -->|"no"| SKIP
+    CHECK -->|"yes"| STORE
+    C2 ==>|"same vector"| STORE
+    STORE ==>|"write"| CACHEDB
+
+    %% 5, 21 — the shared embedding: why a miss is cheap
+    linkStyle 5 stroke:#2f6fd0,stroke-width:4px
+    linkStyle 21 stroke:#2f6fd0,stroke-width:4px
+    %% 8, 9 — the fast path
+    linkStyle 8 stroke:#2f8f5b,stroke-width:4px
+    linkStyle 9 stroke:#2f8f5b,stroke-width:4px
+    %% 22 — the write that makes the next identical question fast
+    linkStyle 22 stroke:#e0479e,stroke-width:4px
+
+    style FULL fill:transparent,stroke:#9a988f,stroke-dasharray: 6 4
+    style SHARED fill:transparent,stroke:#2f7d78,stroke-dasharray: 4 3
+    style E1 fill:#e3f2ea,stroke:#3a8f6f,stroke-width:2px
+    style PROBE fill:#e1efed,stroke:#2f7d78
+    style C2 fill:#e1efed,stroke:#2f7d78,stroke-width:2px
+    style STORE fill:#f7e6e2,stroke:#b1503f
+    style F3 fill:#f6ecd9,stroke:#b8863b
+```
+
+Three properties the diagram is meant to make obvious:
+
+1. **`C2` has three outgoing thick edges.** The embedding is computed once and reused by the probe and the store. Neither ever calls the embedder — that is what makes a miss cost one query instead of a round-trip.
+2. **The safety gate is before the probe, not inside it.** A dnc/abuse turn never even looks at the cache, so no similarity score can ever put it on the fast path.
+3. **The write hangs off the *end* of the full path**, after grounding and after the terminal check — so only a reply this system already accepted can ever be replayed.
+
+### Why a miss is nearly free — the load-bearing design decision
+
+The obvious implementation makes the cache a standalone pre-check that embeds the caller's message itself. That is the one thing to avoid: it adds an embedding round-trip (~100–300ms) to **every** turn, and on a miss that cost is pure waste on top of the normal path. It would make the common case slower to make the lucky case faster.
+
+Instead `lookup()` takes an **already-computed vector**. `retrieve.py` embeds the caller's message on every turn regardless — it needs that vector to classify intent — so the cache reuses it (`Retrieval.message_vec`). A miss therefore costs one extra pgvector query against a small, intent-scoped table: single-digit milliseconds against a ~250ms context build and a ~2000ms LLM call. Measured, the miss overhead is smaller than the run-to-run variance of the LLM call itself.
+
+The corollary is an ordering constraint: the probe sits **after** intent resolution and precedence (so the never-cache list sees the effective intent, not the router's softer first guess) and **before** the pool fetch (so a hit skips that query too). It cannot be moved earlier, because earlier is before the vector exists.
+
+### The threshold, and how it was chosen
+
+`CACHE_THRESHOLD = 0.68`, far stricter than retrieval's 0.45 and for a structural reason: retrieval picks the best of several rules and an LLM then *adapts* the wording to the actual utterance, whereas a hit replays fixed words with no adaptation step. "Close enough to route" is nowhere near "close enough to say verbatim."
+
+Measured on `text-embedding-3-small` against a realistically-phrased stored question (real callers prefix their questions — "quick thing, …" — and the prefix dilutes the vector, so measuring against a bare question overstates the scores):
+
+| | range |
+|---|---|
+| the SAME question, re-asked | **0.764 – 0.875** |
+| a DIFFERENT question | **0.120 – 0.538** |
+
+The bands do not overlap. 0.68 sits in the empty gap: 0.08 below the weakest true restatement, 0.14 above the strongest impostor (`"who is this calling"`, 0.538).
+
+Two earlier values were wrong in opposite directions, both because they were guessed rather than measured — 0.93 essentially never fired (the cache existed but did nothing), and 0.82 sat *inside* the same-question band, rejecting about half of genuine restatements. Worth stating plainly: the number that makes this feature work at all came from measurement, and the guesses were not close.
+
+The asymmetry governs the margin: **a false hit speaks the wrong words to a caller; a false miss merely costs the latency we were paying anyway.** When in doubt this errs high.
+
+### What is never cached
+
+A cached reply is context-free — it cannot know what this call already asked or already collected. So a turn is cacheable only when its reply does not depend on call state, and never when getting it wrong is unrecoverable:
+
+| Exclusion | Why |
+|---|---|
+| **a contentless opening turn** | A bare "hello?" / "yes?" carries no question to match on, so it routes on almost nothing — observed landing on `ai_question`, which would have stored a greeting as the answer to "are you a robot?". Judged on the caller's message: fewer than 2 significant (non-filler) words on turn 1. This was originally a blanket "never cache turn 1", which was safe but unusable — a caller who asks a real question immediately ("hi, quick thing — is this recorded?") is asking on turn 1, so the blanket rule meant a natural short call could never populate the cache at all. |
+| **terminal rules** | A closing ends the call; replaying one by cosine accident hangs up on someone mid-conversation. |
+| **`critical` priority** | dnc, abuse, medical_emergency. The explicit safety rule, enforced in code. |
+| **flow rules — every rule with `intent=None`** | **The structural rule, and the one the design leans on.** The rule set already splits cleanly in two: a rule with no intent is part of the call *script* (`open_greeting`, `verify_identity`, `benefits_check`, the confirm/repeat rules — all 21 of them), and its correct reply depends on *where in the call* it fires rather than on what was asked. A rule *with* an intent is a diversion, whose reply is a fixed fact by construction. So cacheability is read off `governing.chunk.intent` rather than a list of names. This replaced a hand-maintained blocklist that was wrong in both directions — it named 16 rules and still missed six real flow rules, and anything added to `kb.py` later defaulted to **cacheable**, so a new flow rule would silently become replayable. A safety filter whose default is "allow" is not a safety filter. |
+| **specific intent-routed exceptions** | A few diversion rules are unsafe for reasons of their own, and *these* are named explicitly — a short list of exceptions to a rule that already defaults to deny. `special_callback_request` / `special_redirect` / `special_language` commit to this caller's data; `special_garbled_audio` / `special_frustration` carry no fixed fact at all, being only a re-ask of whatever was pending. |
+| **field extraction** | A reply that captured a county/name/number is about *that* caller; replaying it asserts a stranger's data back at someone. |
+| **placeholder leakage** | A reply containing the substituted patient name is personal to one call. |
+| **regenerated turns** | The first attempt was rejected; the second is not evidence of a reliably good answer. |
+| **ungrounded / spliced** | Only `grounded` outcomes are ever stored. |
+| **a reply that advanced the script** | A diversion reply may end by *returning to* the pending question, but not by asking a new one. If its trailing question is not the one that was already pending, the model advanced or invented rather than handing control back, and the reply is not a reusable answer-plus-re-ask. |
+
+Near-duplicate questions **update** rather than insert, so a common question cannot grow the table and slow the lookup it should be speeding up. The dedup bar (`DEDUP_THRESHOLD`, 0.93) is deliberately **higher** than the serve bar (`CACHE_THRESHOLD`, 0.68): when both were 0.68, anything similar enough to be *served* from a row was also similar enough to *overwrite* it, so the table could never hold two neighbouring phrasings of one question and coverage could not accumulate with use.
+
+### The trailing-question gate
+
+The problem that decides whether this cache can exist at all. Almost every diversion rule in `kb.py` ends with *"then return to the pending question"*, so a correct diversion reply has two halves:
+
+> "That's something our coverage counselors can help with — you can text KEEP, or call 1-800-555-1234." ← the fixed fact, position-free
+> "For now, do you still have Medi-Cal benefits?" ← the **pending question**, pure call state
+
+The first half is exactly what a cache should serve; the second is state, and replaying the wrong one makes the script lurch — re-asking something already answered, or jumping to a question not yet reached. Blocking every rule that re-asks would have blocked 12 of the 18 diversion rules, i.e. the whole feature.
+
+So each entry records the pending question its reply trails (`pending_fingerprint`, a sorted content-word fingerprint — compared, never embedded, so the hot path stays free of extra network calls), and is served only on a turn where the *same* question is pending. A reply ending on no question stores `''` and is reusable anywhere. The effect on hit rate is the opposite of blocking: one question asked at two points in a call gets two entries, each correct where it fires, instead of one entry that is wrong half the time.
+
+### Invalidation
+
+Approving a rule (`review.approve`) clears the cached answers in that rule's section. Those replies were confirmed against the *old* rule set, so a newly approved rule could otherwise be silently shadowed by an entry that predates it — producing "I approved it but nothing changed", exactly the failure this system should never produce. `invalidate_for_rule` does the same for a single rule.
+
+### Transparency
+
+A cache hit still produces a full, inspectable payload: `prompt_sent` explains that nothing was sent, names the stored question, the similarity, and the bar, and carries the caller's message verbatim so message-presence checks hold on cached turns too. The frontend labels every Maya turn `⚡ cache` or `⚙ full pipeline`, and the memory card replaces its "prompt built" and "checked" rows with what actually happened ("none — the saved reply was reused", "already verified when it was first answered"). A replayed reply is never presented as a freshly generated one.
+
+`GET /cache/stats` and `POST /cache/clear` expose entries, cumulative hits, and the bar. `SACE_CACHE=off` disables the feature entirely; `SACE_CACHE_THRESHOLD` overrides the bar.
+
+### Remaining limitations
+
+- **The thresholds are model-specific.** Every number above was measured on `text-embedding-3-small`. They do not transfer to another embedding model without re-measuring, and under `MockEmbedder` they are meaningless (the test suite says so explicitly rather than passing quietly).
+- **The same-question band was measured on one question.** 0.764–0.875 comes from restatements of the recording question. A question whose paraphrases spread wider could fall below 0.68 and simply never hit — a silent loss of benefit, not a correctness bug.
+- **No TTL and no eviction.** Entries live until their section is invalidated or the cache is cleared. `hit_count` / `last_hit_at` are recorded to support LRU pruning later, but nothing prunes today.
+- **A hit is not re-validated.** The reply was grounded when stored; it is replayed on the strength of that. If a rule's text is edited without going through `review.approve`, nothing invalidates the entries derived from it.
+- **Cached turns bypass the `asked_questions` check on the voice path.** `step()` appends the cached reply's question to `asked_questions`, but a cached reply cannot itself know what was already asked — the flow-rule and turn-1 exclusions are what keep this from mattering, rather than any positive check.
