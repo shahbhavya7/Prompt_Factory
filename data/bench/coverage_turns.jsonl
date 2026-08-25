@@ -1,0 +1,20 @@
+{"message": "hello?", "expected_rule": "open_greeting", "expected_tier": null}
+{"message": "I think I'm having a heart attack", "expected_rule": "medical_emergency", "expected_tier": null}
+{"message": "stop calling me", "expected_rule": "special_dnc", "expected_tier": null}
+{"message": "this is bullshit, you people are idiots", "expected_rule": "special_abuse", "expected_tier": null}
+{"message": "call me back Monday at 11", "expected_rule": "special_callback_request", "expected_tier": null}
+{"message": "I'm busy right now, can't talk", "expected_rule": "special_busy", "expected_tier": null}
+{"message": "I already have insurance through my job", "expected_rule": "special_elsewhere", "expected_tier": null}
+{"message": "you should call my daughter about this instead", "expected_rule": "special_redirect", "expected_tier": null}
+{"message": "can we do this in Spanish", "expected_rule": "special_language", "expected_tier": null}
+{"message": "where is your clinic located", "expected_rule": "special_clinic_location", "expected_tier": null}
+{"message": "how much does this cost, is it cheaper", "expected_rule": "special_pricing_q", "expected_tier": null}
+{"message": "when is my next appointment", "expected_rule": "special_clinical_q", "expected_tier": null}
+{"message": "are you a robot", "expected_rule": "special_ai_question", "expected_tier": null}
+{"message": "is this call being recorded", "expected_rule": "special_recorded_q", "expected_tier": null}
+{"message": "this is so frustrating, I've been through this already", "expected_rule": "special_frustration", "expected_tier": null}
+{"message": "sorry you're breaking up, I can't hear you", "expected_rule": "special_garbled_audio", "expected_tier": null}
+{"message": "do I have a copay for this", "expected_rule": "special_payment_q", "expected_tier": null}
+{"message": "can you set up an appointment for me", "expected_rule": "special_appointment_scheduling", "expected_tier": null}
+{"message": "what do I need to do to renew my Medi-Cal", "expected_rule": "special_eligibility_renewal", "expected_tier": null}
+{"message": "I want to speak to a supervisor", "expected_rule": "special_complaint_escalation", "expected_tier": null}

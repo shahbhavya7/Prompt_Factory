@@ -1,0 +1,18 @@
+{
+  "sha": "0cd57a4",
+  "campaign": "coverage",
+  "corpus": "data/bench/coverage_turns.jsonl",
+  "embedding_mode": "openai",
+  "llm_model": "gpt-4o-mini",
+  "wall_time_s": 44.58,
+  "n": 20,
+  "cache_hit_rate": 0.0,
+  "p50_cache_hit_ms": null,
+  "p95_cache_hit_ms": null,
+  "p50_full_path_ms": 2143.2041460029723,
+  "p95_full_path_ms": 2396.1433211447006,
+  "p50_prompt_tokens": 1164.0,
+  "governing_rule_accuracy": 0.9,
+  "governing_rule_checks": 20,
+  "grounded_rate": 1.0
+}
