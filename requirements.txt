@@ -42,3 +42,6 @@ noisereduce==3.0.3     # MIT, spectral-gate denoise; pure numpy/scipy, no torch
 # ── demo API (FastAPI, wraps Engine for the frontend/ React app) ───────────
 fastapi==0.140.13
 uvicorn[standard]==0.51.0
+
+# ── renewal campaign source extraction (scripts/load_renewal_sources.py) ───
+pypdf==6.1.3
