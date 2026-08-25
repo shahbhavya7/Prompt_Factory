@@ -602,11 +602,23 @@ def record_hit(cache_id: str) -> None:
 
 def store(*, question: str, question_vec, reply: str, intent: str | None,
           governing_rule_id: str | None, grounding_cosine: float | None = None,
-          session_id: str | None = None, pending: str = "") -> str | None:
+          session_id: str | None = None, pending: str = "",
+          table: str = "answer_cache", source: str = "live",
+          tier: str | None = None) -> str | None:
     """Persist one confirmed question->reply pair. Returns the row id, or None.
 
     Like record_hit, deliberately tolerant: caching is an optimisation, and a
     failure to store must never surface as a failed call.
+
+    `source` distinguishes a row earned from a real call ("live", the default
+    — every row this function ever wrote before `source` existed) from one
+    pre-loaded from a campaign's own answer bank ("seed"). `tier` carries that
+    source's own tier label through for reporting; unused by lookup().
+
+    The insert is raw SQL rather than the `AnswerCacheRow` ORM object so
+    `table` can point at any campaign's cache table, not only the one
+    `AnswerCacheRow` is declared against — the same reason `lookup()` above is
+    raw SQL.
     """
     if not _ENABLED:
         return None
@@ -650,7 +662,7 @@ def store(*, question: str, question_vec, reply: str, intent: str | None,
             existing = session.execute(
                 sql_text(
                     f"SELECT id, embedding <=> CAST(:q AS vector) AS distance "
-                    f"FROM answer_cache WHERE {where_intent} "
+                    f"FROM {table} WHERE {where_intent} "
                     f"  AND pending_fingerprint = :pending "
                     f"ORDER BY distance LIMIT 1"
                 ),
@@ -660,21 +672,30 @@ def store(*, question: str, question_vec, reply: str, intent: str | None,
             if existing is not None and (1.0 - float(existing.distance)) >= DEDUP_THRESHOLD:
                 session.execute(
                     sql_text(
-                        "UPDATE answer_cache SET reply = :r, question = :q, "
-                        "governing_rule_id = :g, grounding_cosine = :c WHERE id = :i"
+                        f"UPDATE {table} SET reply = :r, question = :q, "
+                        f"governing_rule_id = :g, grounding_cosine = :c, "
+                        f"source = :src, tier = :tier WHERE id = :i"
                     ),
                     {"r": reply, "q": question, "g": governing_rule_id,
-                     "c": grounding_cosine, "i": existing.id},
+                     "c": grounding_cosine, "src": source, "tier": tier,
+                     "i": existing.id},
                 )
                 session.commit()
                 return existing.id
 
-            session.add(AnswerCacheRow(
-                id=row_id, question=question, embedding=vec, reply=reply,
-                intent=intent, governing_rule_id=governing_rule_id,
-                grounding_cosine=grounding_cosine, source_session_id=session_id,
-                pending_fingerprint=pending,
-            ))
+            session.execute(
+                sql_text(
+                    f"INSERT INTO {table} "
+                    f"(id, question, embedding, reply, intent, governing_rule_id, "
+                    f" grounding_cosine, source_session_id, pending_fingerprint, "
+                    f" hit_count, source, tier) "
+                    f"VALUES (:id, :q, CAST(:vec AS vector), :r, :intent, :g, "
+                    f" :c, :sess, :pending, 0, :src, :tier)"
+                ),
+                {"id": row_id, "q": question, "vec": str(list(vec)), "r": reply,
+                 "intent": intent, "g": governing_rule_id, "c": grounding_cosine,
+                 "sess": session_id, "pending": pending, "src": source, "tier": tier},
+            )
             session.commit()
         return row_id
     except Exception as exc:  # pragma: no cover - optimisation path
@@ -682,13 +703,13 @@ def store(*, question: str, question_vec, reply: str, intent: str | None,
         return None
 
 
-def invalidate_for_rule(rule_id: str) -> int:
+def invalidate_for_rule(rule_id: str, table: str = "answer_cache") -> int:
     """Drop every cached answer derived from one rule. Called when that rule
     changes, so an edited rule cannot keep serving its old wording forever."""
     try:
         with SessionLocal() as session:
             n = session.execute(
-                sql_text("DELETE FROM answer_cache WHERE governing_rule_id = :i"),
+                sql_text(f"DELETE FROM {table} WHERE governing_rule_id = :i"),
                 {"i": rule_id},
             ).rowcount
             session.commit()
@@ -719,19 +740,30 @@ def invalidate_for_intent(intent: str | None) -> int:
         return 0
 
 
-def stats() -> dict:
+def stats(table: str = "answer_cache") -> dict:
     with SessionLocal() as session:
         row = session.execute(sql_text(
-            "SELECT count(*) AS entries, COALESCE(sum(hit_count),0) AS hits "
-            "FROM answer_cache"
+            f"SELECT count(*) AS entries, COALESCE(sum(hit_count),0) AS hits "
+            f"FROM {table}"
         )).fetchone()
         return {"entries": int(row.entries), "hits": int(row.hits),
                 "threshold": CACHE_THRESHOLD,
                 "dedup_threshold": DEDUP_THRESHOLD, "enabled": _ENABLED}
 
 
-def clear() -> int:
+def clear(table: str = "answer_cache", source: str | None = None) -> int:
+    """Drop cached answers. With `source=None` (the default), drops every row —
+    unchanged from before `source` existed. With `source="seed"` (or "live"),
+    drops only rows of that source, so seeded rows can be reloaded without
+    wiping ones a real call actually earned — mirrors load_kb.py's
+    `delete where source != 'learned'` split for the chunks pool.
+    """
     with SessionLocal() as session:
-        n = session.execute(sql_text("DELETE FROM answer_cache")).rowcount
+        if source is None:
+            n = session.execute(sql_text(f"DELETE FROM {table}")).rowcount
+        else:
+            n = session.execute(
+                sql_text(f"DELETE FROM {table} WHERE source = :s"), {"s": source}
+            ).rowcount
         session.commit()
     return int(n or 0)

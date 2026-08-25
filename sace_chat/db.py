@@ -164,6 +164,18 @@ class AnswerCacheRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     last_hit_at = Column(DateTime(timezone=True), nullable=True)
 
+    # seed | live. "seed" is a row pre-loaded from a campaign's own answer
+    # bank (e.g. the renewal KB's CSV of pre-written Q&As) rather than earned
+    # from a live call; "live" (the default) is everything this module has
+    # always stored. The distinction is what lets /cache/clear reload seeded
+    # answers without wiping ones a real caller's turn actually confirmed —
+    # mirrors load_kb.py's source != 'learned' split for the chunks pool.
+    source = Column(String, nullable=False, default="live")
+    # A campaign's own answer tier (e.g. the renewal KB's T1-T4), carried
+    # through from a seed source for reporting; nullable because a live-
+    # learned entry has no tier of its own.
+    tier = Column(String, nullable=True)
+
 
 class NeedsReviewRow(Base):
     """The human review queue: every candidate rule that did NOT go straight
@@ -336,6 +348,21 @@ def init_db():
         conn.execute(
             text("CREATE INDEX IF NOT EXISTS ix_answer_cache_pending "
                  "ON answer_cache (pending_fingerprint)")
+        )
+
+        # Additive: existing rows all predate the source/tier split, and
+        # 'live' is the correct backfill for every one of them — they were all
+        # earned from a real call, since seeding didn't exist before this.
+        conn.execute(text(
+            "ALTER TABLE answer_cache ADD COLUMN IF NOT EXISTS "
+            "source VARCHAR NOT NULL DEFAULT 'live'"
+        ))
+        conn.execute(text(
+            "ALTER TABLE answer_cache ADD COLUMN IF NOT EXISTS tier VARCHAR"
+        ))
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_answer_cache_source "
+                 "ON answer_cache (source)")
         )
 
 

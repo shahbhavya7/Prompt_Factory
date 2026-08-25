@@ -392,10 +392,17 @@ def cache_stats():
 
 
 @app.post("/cache/clear")
-def cache_clear():
-    """Drop every cached answer. The pool and the rules are untouched; entries
-    rebuild themselves from the next few calls."""
-    return {"cleared": answer_cache.clear()}
+def cache_clear(source: str | None = None):
+    """Drop cached answers. The pool and the rules are untouched; entries
+    rebuild themselves from the next few calls.
+
+    With no `source`, drops everything (unchanged behaviour). With
+    `source=seed`, drops only pre-seeded rows so a campaign's answer bank can
+    be reloaded without wiping ones a real caller's turn confirmed
+    (`source=live`) — mirrors load_kb.py's `delete where source != 'learned'`
+    split for the chunks pool.
+    """
+    return {"cleared": answer_cache.clear(source=source)}
 
 
 @app.get("/review/pending")
