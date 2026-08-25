@@ -353,6 +353,55 @@ def _apply_field_defaults(governing, valid: dict, state) -> None:
         valid["extracted_fields"][field_name] = default
 
 
+_DIGIT_RE = re.compile(r"\d+")
+
+
+def _digit_tokens(text: str) -> set[str]:
+    """Every run of digits in `text`, e.g. "March 8th, 1983" -> {"8", "1983"}.
+
+    Deliberately loose: callers say a date of birth in wildly different
+    formats ("March 8th, 1983", "3/8/1983", "08-03-1983") and a case record
+    is unlikely to be stored in exactly the same one. Comparing digit tokens
+    rather than the full string sidesteps format-matching entirely — see
+    _apply_identity_derivation.
+    """
+    return set(_DIGIT_RE.findall(text or ""))
+
+
+def _dob_matches_case_record(extracted: str, on_record: str) -> bool:
+    """Loose date-of-birth match: at least two digit tokens in common (e.g.
+    day and year), so "March 8th, 1983" matches "1983-03-08" without either
+    side needing a canonical format. A single shared token (e.g. just the
+    year) is not enough — too many birthdates share a year."""
+    extracted_digits = _digit_tokens(extracted)
+    record_digits = _digit_tokens(on_record)
+    if not extracted_digits or not record_digits:
+        return False
+    return len(extracted_digits & record_digits) >= 2
+
+
+def _apply_identity_derivation(valid: dict, state) -> None:
+    """Derive identity_verified by comparing an extracted date_of_birth
+    against this call's own case record — never taking the model's word for
+    it, and never stamped as a rule default (see models.Chunk.sets and
+    scripts/build_kb_renewal.py's Phase 2E note on why identity_verified
+    does not appear in any flow rule's `sets`).
+
+    A caller who never gives a date of birth, or gives one that does not
+    match the record, leaves identity_verified unset — which keeps
+    verify_dob/packet_check's own `requires` gate open so the flow can only
+    ask again, never silently assume the caller is who they claim.
+    """
+    if "identity_verified" in valid["extracted_fields"]:
+        return
+    extracted_dob = valid["extracted_fields"].get("date_of_birth")
+    if not extracted_dob:
+        return
+    on_record = (getattr(state, "case_record", None) or {}).get("date_of_birth")
+    if on_record and _dob_matches_case_record(str(extracted_dob), str(on_record)):
+        valid["extracted_fields"]["identity_verified"] = True
+
+
 def question_key(question: str) -> str:
     """Identity of a question for dedup.
 
@@ -369,7 +418,8 @@ def question_key(question: str) -> str:
 class Engine:
     def __init__(self, stable_core, rules=None, embedder=None, manager=None, llm=None,
                  monolith_text=None, table="chunks", chunks=None,
-                 never_say_guard=None, never_say_fallback=""):
+                 never_say_guard=None, never_say_fallback="",
+                 cache_table="answer_cache"):
         self.stable_core = stable_core
         self.rules = rules if rules is not None else (chunks or [])
         self.embedder = embedder
@@ -377,6 +427,14 @@ class Engine:
         self.llm = llm
         self.monolith_tokens = est_tokens(monolith_text) if monolith_text else MONOLITH_TOKENS
         self.table = table
+        # Which reply-cache table this campaign reads and writes — see
+        # campaign.py's CampaignConfig.cache_table and db.py's
+        # answer_cache_renewal (Phase 2E: previously every campaign shared
+        # "answer_cache", which let a coverage-learned reply on one of the
+        # five safety intents both campaigns reuse verbatim — dnc, abuse,
+        # medical_emergency, garbled_audio, frustration — be served on a
+        # renewal call under the wrong clinic's script).
+        self.cache_table = cache_table
         self.router = IntentRouter(embedder)
         # Optional (reply_text, case_record) -> (ok, reason) predicate, run in
         # prepare_reply only — see that method. None (the default) disables it
@@ -391,6 +449,7 @@ class Engine:
             return retrieve(
                 conn, state, message, self.embedder,
                 history=history, router=self.router, table=self.table,
+                cache_table=self.cache_table,
                 precedence=self.manager.resolve_precedence,
             )
 
@@ -498,7 +557,7 @@ class Engine:
             dbg = cached_decision(
                 user_message, retrieval, (time.perf_counter() - start) * 1000
             )
-            answer_cache.record_hit(retrieval.cache_hit["id"])
+            answer_cache.record_hit(retrieval.cache_hit["id"], table=self.cache_table)
             return dbg["turn_json"]["reply"], dbg
 
         valid, raw = self._decide(
@@ -587,6 +646,7 @@ class Engine:
         # once the audio finishes — see voice_agent.py's finish_turn — so the
         # same deterministic defaults have to land here too, not only in
         # step()'s own chat-path copy of this logic.
+        _apply_identity_derivation(valid, state)
         _apply_field_defaults(governing, valid, state)
 
         question = _extract_question(reply_text)
@@ -719,6 +779,7 @@ class Engine:
             governing_rule_id=governing.chunk.id if governing else None,
             grounding_cosine=debug.get("governing_cosine"),
             pending=pending,
+            table=self.cache_table,
         )
         if cache_id:
             debug.setdefault("notes", []).append(f"cached as {cache_id} for reuse")
@@ -806,7 +867,7 @@ class Engine:
             final = cached_decision(
                 user_message, retrieval, (time.perf_counter() - start) * 1000
             )
-            answer_cache.record_hit(retrieval.cache_hit["id"])
+            answer_cache.record_hit(retrieval.cache_hit["id"], table=self.cache_table)
             reply_text = final["turn_json"]["reply"]
             state.intent = retrieval.intent or "none"
             state.opt_out = state.opt_out or retrieval.opt_out
@@ -879,6 +940,7 @@ class Engine:
         state.intent = retrieval.intent or "none"
         state.opt_out = state.opt_out or retrieval.opt_out
         state.ended = state.ended or valid["call_should_end"]
+        _apply_identity_derivation(valid, state)
         _apply_field_defaults(governing, valid, state)
         state.collected_fields.update(valid["extracted_fields"])
 

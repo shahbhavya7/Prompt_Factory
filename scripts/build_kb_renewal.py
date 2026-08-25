@@ -29,6 +29,24 @@ different methods:
      already uses. `requires`/`sets`/`step_order` encode the mermaid graph's
      branch points as prerequisites — see retrieve.py's _fetch_general.
 
+Phase 2E gating fix: every negative-only `requires` entry on the D3/D4
+branch points (packet_check / address_capture / already_submitted_check /
+already_submitted_close / willingness_ask) has been paired with a positive
+"the deciding question was actually asked" flag (dob_asked,
+packet_check_asked, packet_question_resolved, submitted_check_asked). An
+adversarial walkthrough (tests/test_renewal_adversarial.py) found that
+without this pairing, a caller who dodges the date-of-birth question could
+have identity_verified auto-stamped by _apply_field_defaults the moment
+ANY flow rule governed via the lowest-eligible-step fallback — regardless
+of whether the caller had said anything resembling a real answer — which
+then raced the call straight into address_capture having never actually
+verified anything. identity_verified is consequently no longer stamped as
+a default anywhere in FLOW_RULES; it is derived in engine.py by comparing
+an extracted date_of_birth against state.case_record (see
+_apply_identity_derivation), and it has been fully decoupled from flow
+gating (nothing below requires it) so a wrong or missing case_record can
+never wedge the call.
+
 Known gaps, flagged rather than filled (see scripts/load_renewal_sources.py
 for the mechanical ones found in the CSV/PDF themselves):
 
@@ -239,23 +257,40 @@ FLOW_RULES = [
                 "wait.",
         "cue": "yeah I've got a minute, sure go ahead, okay that's fine, now works for me "
                "-- the caller has agreed that now is a good time to talk.",
-        "requires": {"name_confirmed": True, "disclosed": REQUIRES_NOT_SET},
-        "sets": {"disclosed": True}, "step_order": 3,
+        # Gated on identity_verified rather than a one-shot "disclosed" flag,
+        # and deliberately does NOT self-close on its own "asked" flag: a
+        # caller who dodges the DOB question must make this rule (and not
+        # packet_check) win the next fallback pick, so Maya re-asks rather
+        # than drifting into the packet question on an unverified identity.
+        # See _apply_identity_derivation in engine.py — identity_verified is
+        # never stamped as a default here; it is only ever set by comparing
+        # an extracted date_of_birth against state.case_record.
+        "requires": {"name_confirmed": True, "identity_verified": REQUIRES_NOT_SET},
+        "sets": {"dob_asked": True}, "step_order": 3,
     },
     {
         "id": "packet_check",
         "title": "Ask whether the renewal packet arrived",
         "text": 'AFTER asking for the date of birth, WHEN the caller gives one, read it back '
-                'to confirm, add identity_verified to extracted_fields set to true, then say: '
-                '"{business_entity} sent you a Medi-Cal renewal packet, to your address on '
-                "file. A lot of these get lost in the post or go to an old address, so I "
-                'want to check — did that reach you?" Naming the post or an old address '
-                "BEFORE asking is deliberate — it gives the caller permission to say no "
-                "without it sounding like their fault.",
+                'to confirm and add date_of_birth to extracted_fields with exactly the value '
+                'the caller gave, then say: "{business_entity} sent you a Medi-Cal renewal '
+                "packet, to your address on file. A lot of these get lost in the post or go "
+                'to an old address, so I want to check — did that reach you?" Naming the '
+                "post or an old address BEFORE asking is deliberate — it gives the caller "
+                "permission to say no without it sounding like their fault. Never add "
+                "identity_verified yourself — whether the date of birth actually matches "
+                "this caller's record is checked in code, not by you.",
         "cue": "March 8th 1983, that's my birthday, here's my date of birth -- the caller has "
                "given their date of birth.",
-        "requires": {"disclosed": True, "identity_verified": REQUIRES_NOT_SET},
-        "sets": {"identity_verified": True}, "step_order": 4,
+        # dob_asked is the positive pairing for the negative identity_verified
+        # gate (Section A of the Phase 2E review): without it, a caller who
+        # has never even been asked for a DOB could still have this rule
+        # picked by the lowest-eligible-step fallback. identity_verified
+        # itself is never set in `sets` — see the note above and
+        # engine._apply_identity_derivation.
+        "requires": {"dob_asked": True, "identity_verified": REQUIRES_NOT_SET},
+        "sets": {"packet_check_asked": True, "packet_question_resolved": True},
+        "step_order": 4,
     },
     {
         "id": "address_capture",
@@ -275,11 +310,25 @@ FLOW_RULES = [
                "think, here's the new address, apartment, is that right yes -- the caller "
                "says the renewal packet went to the wrong or an old address, or is giving or "
                "confirming a new one.",
+        # packet_check_asked (positive) replaces the old identity_verified
+        # gate: whether the packet reached the caller is a fact about the
+        # PACKET, not about whether their DOB was ever checked, and gating it
+        # on identity_verified let this rule become eligible via the
+        # lowest-step fallback before packet_check had ever actually
+        # governed a turn. Also sets packet_question_resolved — the same
+        # flag packet_check sets on the "yes it arrived" branch — so both D3
+        # branches converge on one completion signal for
+        # already_submitted_check to gate on, without needing an OR in the
+        # `requires` grammar.
         "requires": {
-            "identity_verified": True, "packet_received": False,
+            "packet_check_asked": True, "packet_received": False,
             "already_submitted": REQUIRES_NOT_SET,
         },
-        "sets": {"packet_received": False, "address_updated": True}, "step_order": 5,
+        "sets": {
+            "packet_received": False, "address_updated": True,
+            "packet_question_resolved": True,
+        },
+        "step_order": 5,
     },
     {
         "id": "already_submitted_check",
@@ -292,8 +341,8 @@ FLOW_RULES = [
         "cue": "yes it arrived, yes I got it, okay, alright, one more quick thing sure, go "
                "ahead ask away -- the packet-arrival question has just been answered yes, or "
                "the address correction has just been wrapped up.",
-        "requires": {"identity_verified": True, "already_submitted": REQUIRES_NOT_SET},
-        "sets": {"packet_received": True}, "step_order": 6,
+        "requires": {"packet_question_resolved": True, "already_submitted": REQUIRES_NOT_SET},
+        "sets": {"packet_received": True, "submitted_check_asked": True}, "step_order": 6,
     },
     {
         "id": "already_submitted_close",
@@ -307,7 +356,10 @@ FLOW_RULES = [
                 'now. Take care!" Then stop.',
         "cue": "yes I already sent it, already submitted, mailed it back weeks ago -- the "
                "patient has confirmed the renewal is already in.",
-        "requires": {"identity_verified": True, "already_submitted": REQUIRES_NOT_SET},
+        # submitted_check_asked (positive) replaces identity_verified — this
+        # and willingness_ask are the two branches of D4, and both must have
+        # actually been asked the D4 question before either becomes eligible.
+        "requires": {"submitted_check_asked": True, "already_submitted": REQUIRES_NOT_SET},
         "sets": {"already_submitted": True}, "step_order": 7,
         "terminal": True, "exclusive": True,
     },
@@ -322,7 +374,7 @@ FLOW_RULES = [
                 'prefer?" Then wait.',
         "cue": "no I never got it, not yet, haven't sent it in, no not submitted -- the "
                "patient has said the renewal has not been submitted yet.",
-        "requires": {"identity_verified": True, "already_submitted": REQUIRES_NOT_SET},
+        "requires": {"submitted_check_asked": True, "already_submitted": REQUIRES_NOT_SET},
         "sets": {"already_submitted": False, "willingness_asked": True}, "step_order": 8,
     },
     {

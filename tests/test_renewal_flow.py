@@ -73,7 +73,10 @@ def main():
            tiers == {"T1": 92, "T2": 3, "T3": 21, "T4": 10}, f"got {tiers}")
 
     print("\n[1] Path A walkthrough (help branch, with address correction)")
-    state, history = CallState(), []
+    # Real date of birth for this call, so packet_check's date_of_birth
+    # extraction can be verified against it (engine._apply_identity_derivation)
+    # rather than blindly self-stamped — see the Phase 2E gating fix.
+    state, history = CallState(case_record={"date_of_birth": "March 8th, 1983"}), []
     seen_ids = []
     address_capture_ended_call = False
     reask_found = False
@@ -94,6 +97,9 @@ def main():
 
     record("2. no turn re-asked a question already in ALREADY ASKED", not reask_found)
     record("3. address_capture never ended the call", not address_capture_ended_call)
+    record("3b. identity_verified was derived from the real date of birth "
+           "(not auto-stamped)", state.collected_fields.get("identity_verified") is True,
+           f"collected_fields={state.collected_fields}")
     record("4. the call ended by the time warm_transfer governed", state.ended)
 
     print("\n[5] the never-say guard")
