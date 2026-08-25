@@ -41,11 +41,24 @@ class CampaignConfig:
     name: str
     kb_module: str
     chunks_table: str = "chunks"
+    # Not yet wired into the reply cache's own call sites (retrieve.py,
+    # engine.py always address "answer_cache" directly) — see
+    # answer_cache.py's table= parameters, added for this but unused so far.
+    # Safe today only because intent label vocabularies never collide between
+    # campaigns; a real second cache table is follow-up work, not done here.
     cache_table: str = "answer_cache"
     stable_core: str = field(default="", repr=False)
     placeholders: dict = field(default_factory=dict)
     intent_exemplars: dict = field(default_factory=dict)
     valid_intents: frozenset = field(default_factory=frozenset)
+    # (reply_text, case_record) -> (ok, reason) — run in Engine.prepare_reply
+    # only, and only when this campaign supplies one. None disables it
+    # entirely; coverage's registration below leaves this at the default.
+    never_say_guard: object = None
+    # The safe line spoken when a never-say violation survives the
+    # regeneration budget and the governing rule is not itself a transfer
+    # rule with its own line to fall back to. "" for a campaign with no guard.
+    never_say_fallback: str = ""
 
 
 _CAMPAIGNS: dict[str, CampaignConfig] = {}
@@ -103,4 +116,55 @@ def _register_coverage() -> None:
     ))
 
 
+def _register_renewal() -> None:
+    """The renewal campaign: a distinct rule pool (chunks_renewal — see
+    db.init_db, "a Coverage rule and a Renewal rule must never compete for
+    the same turn"), its own compliance guard, and its own placeholder
+    values. sace_chat.kb_renewal is a GENERATED file — see
+    scripts/build_kb_renewal.py; nothing here authors KB content.
+    """
+    from sace_chat import guards, kb_renewal
+
+    by_id = {r.id: r for r in kb_renewal.RULES}
+    # Sourced from the CSV verbatim (KB-IMM-03), not authored here — see
+    # build_kb_renewal.py's module docstring on why a universal fallback
+    # exists at all: a never-say violation on a NON-transfer (T1) rule has no
+    # rule of its own to fall back to.
+    fallback = by_id["kb_imm_03"].text
+
+    register(CampaignConfig(
+        name="renewal",
+        kb_module="sace_chat.kb_renewal",
+        chunks_table="chunks_renewal",
+        cache_table="answer_cache",
+        stable_core=kb_renewal.RENEWAL_STABLE_CORE,
+        placeholders={
+            # Reuses coverage's own patient-identity/callback keys — the
+            # renewal CSV's "[clinic name]" and the PDF's illustrative
+            # "Maria Reyes"/"Santa Rosa Community Health" are the same KIND
+            # of value coverage already templates, so the same keys and
+            # substitution mechanism apply; only the values differ per
+            # campaign. Demo values only — a real deployment supplies the
+            # actual caller's own name and this clinic's own number.
+            "{patient_first_name}": "Maria",
+            "{patient_last_name}": "Reyes",
+            "{callback_number}": "(707) 555-0142",
+            "{business_entity}": "Santa Rosa Community Health",
+            "{current_month}": "this month",
+        },
+        intent_exemplars=dict(kb_renewal.RENEWAL_INTENT_EXEMPLARS),
+        valid_intents=frozenset(kb_renewal.RENEWAL_VALID_INTENTS),
+        never_say_guard=guards.check_never_say,
+        never_say_fallback=fallback,
+    ))
+
+
 _register_coverage()
+try:
+    _register_renewal()
+except ImportError:
+    # sace_chat.kb_renewal does not exist until scripts/build_kb_renewal.py
+    # has been run once — harmless for anyone who has only pulled the
+    # coverage campaign so far; get_campaign("renewal") will raise its own
+    # clear error if something then asks for it.
+    pass

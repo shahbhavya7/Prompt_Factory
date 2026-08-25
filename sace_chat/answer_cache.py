@@ -447,6 +447,12 @@ def is_cacheable(*, governing, outcome: str, regenerated: bool,
         return False, f"{chunk.id} is terminal"
     if getattr(chunk, "priority", "") == "critical":
         return False, f"{chunk.id} is critical priority"
+    # A tier-2 answer (renewal's "read this caller's own case record") is
+    # correct for exactly one caller and wrong for every other one it might
+    # be replayed to — the opposite of what makes a T1/T3 answer reusable.
+    # Coverage rules carry no tier, so this never fires for them.
+    if getattr(chunk, "tier", None) == "T2":
+        return False, f"{chunk.id} is tier T2 — its answer is this caller's own case data"
 
     # The structural rule — see NEVER_CACHE_RULES above. A SEED rule with no
     # intent is part of the call script, so its reply depends on position in the

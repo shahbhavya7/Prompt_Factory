@@ -794,6 +794,8 @@ def build_engine() -> Engine:
     engine = Engine(
         stable_core=STABLE_CORE, rules=RULES, embedder=get_embedder(),
         manager=manager, llm=get_llm(), table=CAMPAIGN.chunks_table,
+        never_say_guard=CAMPAIGN.never_say_guard,
+        never_say_fallback=CAMPAIGN.never_say_fallback,
     )
     # Exemplars embedded once here, at startup, so no turn pays for them.
     engine.router.warm()
