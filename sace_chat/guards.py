@@ -82,3 +82,82 @@ def check_never_say(reply_text: str, case_record: dict | None = None) -> tuple[b
                 f"verbatim in this call's case record"
             )
     return True, ""
+
+
+# Deterministic T4 short-circuit (Phase 2E, Part D). Immigration and distress
+# disclosures must not depend on embedding recall — a caller who says "I
+# don't want to be here anymore" cannot be allowed to fall through because a
+# retrieval query happened to land a few hundredths short of
+# GENERAL_MIN_SIMILARITY. Modelled on manager.resolve_precedence: raw text,
+# checked BEFORE embedding, not the router's single best label — see
+# retrieve.retrieve(), which checks this ahead of everything else.
+#
+# Ordered most-severe first and the first match wins, since a message like
+# "I'm not safe at home and can't afford my insulin" should route to whichever
+# is checked first rather than whichever regex happens to match last.
+#
+# English AND Spanish-language fragments are included for the same reason
+# regex beats embedding recall here at all: a caller code-switching mid
+# sentence ("no tengo papeles, I'm scared") must not depend on which language
+# the embedding space happens to weight more heavily.
+_SELF_HARM_RE = re.compile(
+    r"\b(?:don'?t want to be here (?:any ?more)?|kill myself|end (?:my|it) all|"
+    r"suicid\w*|hurt myself|no quiero estar aqu[ií])\b",
+    re.I,
+)
+_UNSAFE_AT_HOME_RE = re.compile(
+    r"\b(?:not safe at home|won'?t let me (?:leave|go)|hurting me|hits me|"
+    r"afraid of (?:him|her|them)|no es seguro en mi casa)\b",
+    re.I,
+)
+_CANT_AFFORD_MEDS_RE = re.compile(
+    r"\b(?:can'?t afford my (?:medication|meds|pills|insulin)|"
+    r"ran out of (?:my )?insulin|can'?t pay for my pills|"
+    r"no puedo pagar mis (?:pastillas|medicinas))\b",
+    re.I,
+)
+_ACUTE_DISTRESS_RE = re.compile(
+    r"\b(?:sick right now|i'?m in (?:a lot of )?pain|think i need a doctor|"
+    r"need an ambulance|me duele mucho|necesito un doctor)\b",
+    re.I,
+)
+_GREEN_CARD_RE = re.compile(r"\bgreen card\b", re.I)
+_IMMIGRATION_RE = re.compile(
+    r"\b(?:\bICE\b|immigration|deport\w*|undocumented|no status|"
+    r"don'?t have (?:papers|status)|my papers|no tengo papeles|"
+    r"indocumentad[oa]|sin estatus)\b",
+    re.I,
+)
+
+# rule_id -> the seed rule that already carries the exact, transfer=True line
+# for this situation (see sace_chat/kb_renewal.py). Checked in this order;
+# the first pattern to match wins. kb_imm_03 is the generic immigration line
+# — the same one campaign.py already uses as the renewal never-say fallback
+# — so a phrasing that mentions immigration without a green card specifically
+# lands there.
+_T4_ROUTES = (
+    ("kb_dis_04", _SELF_HARM_RE),
+    ("kb_dis_03", _UNSAFE_AT_HOME_RE),
+    ("kb_dis_01", _CANT_AFFORD_MEDS_RE),
+    ("kb_dis_02", _ACUTE_DISTRESS_RE),
+    ("kb_imm_05", _GREEN_CARD_RE),
+    ("kb_imm_03", _IMMIGRATION_RE),
+)
+
+
+def t4_shortcircuit(message: str) -> str | None:
+    """The T4 rule id this message must be routed to, or None.
+
+    Checked BEFORE embedding (see retrieve.retrieve()) — a caller disclosing
+    self-harm, an unsafe home, an unaffordable medication, acute distress, or
+    an immigration-status fear gets the fixed, transfer=True line for that
+    situation deterministically, never contingent on a cosine happening to
+    clear GENERAL_MIN_SIMILARITY. The semantic T4 rules stay in the pool as
+    the second net for a phrasing this does not cover.
+    """
+    if not message:
+        return None
+    for rule_id, pattern in _T4_ROUTES:
+        if pattern.search(message):
+            return rule_id
+    return None
