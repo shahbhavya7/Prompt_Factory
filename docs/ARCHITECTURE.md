@@ -8,11 +8,13 @@ State-Aware Context Engineering for a scripted outreach agent.
 
 **sace-chat** replaces a monolithic 5,782-token agent system prompt with two parts: a small **STABLE CORE** (548 tokens, always sent) and a **flat memory of 39 individual rules** (21 general + 18 intent-routed) stored in Postgres/pgvector, of which at most **two** reach any given turn's prompt — selected purely by semantic similarity to what the caller just said. Because the per-turn prompt is `CORE + INSTRUCTION + (1–2 rules)`, its size is **O(rules in scope)**, not O(total rules): adding the 40th, 100th, or 500th rule to memory does not change what a turn costs, whereas a monolith pays for every rule on every turn. Measured on this rulebook, a turn costs **roughly 1,000–1,350 tokens against the 5,782-token baseline (about 77–82% smaller)**, while the sum of all rule text — what a monolith would carry — is already 4,287 tokens and grows with every rule added. (Run `phase1_stats.py` for the exact current figures — they move as rules are added, and the numbers here are a snapshot.)
 
-Two front ends now sit on top of the same `Engine`: a Streamlit chat app (`streamlit_app.py`) and a **LiveKit voice agent** (`voice_agent.py`) that answers real calls via Deepgram STT/TTS. Both call into `Engine.build_turn_context` / `Engine.step` / `Engine.prepare_reply`, so retrieval, assembly and validation are one code path regardless of which front end is talking. The voice agent also runs a small **WebSocket spectator server**, broadcasting what it is doing turn-by-turn to a **live dashboard** (`frontend/`) — see [§7](#7-the-live-dashboard-voice_agentpy--frontend) for the whole mechanism.
+Two front ends now sit on top of the same `Engine`: a Streamlit chat app (`streamlit_app.py`) and a **LiveKit voice agent** (`voice_agent.py`) that answers real calls via Deepgram STT/TTS. Both call into `Engine.build_turn_context` / `Engine.step` / `Engine.prepare_reply`, so retrieval, assembly and validation are one code path regardless of which front end is talking. The voice agent also runs a small **WebSocket spectator server**, broadcasting what it is doing turn-by-turn to a **live dashboard** (`frontend/`) — see [§7](#7-the-live-dashboard-voice_agentpy--frontend) for the whole mechanism. The dashboard can also start and end calls and toggle the audio filters; it still cannot influence what is said inside a turn.
 
 On top of the live path sits a **post-call learning loop**: after a call ends, an LLM proposes new rules from the transcript, and each candidate must pass three independent verification gates — **grounding** (is this actually attested in the transcript?), **duplicate** (do we already know this?), and **conflict** (does this contradict a rule we already hold?).
 
 **Clearing those gates does not store the rule.** A candidate that survives them is queued in `needs_review` for a person, together with the exchange that triggered it; a human approves it (optionally rewriting its text, its cue, its intent, or its priority), or discards it. `sace_chat.review.approve` is the only path from that queue into the pool. Duplicates are still dropped outright — there is nothing for a person to decide about a rule we already hold — and conflicts and ungrounded candidates land in the same queue, tagged with why. So the automated gates are a filter on *what deserves a human's attention*, not an admission decision, and the honest claim is "the agent proposes; a person decides", which is stronger than "the agent learns from its calls" was. See [§8](#8-the-human-approval-queue).
+
+Two further subsystems sit on the live path. A **reply cache** ([§9](#9-the-reply-cache-sace_chatanswer_cachepy)) replays a confirmed grounded answer when a later caller asks the same question, skipping assembly, the LLM call and the grounding check — the turn drops from ~10–20s to ~2s, and a miss costs one small extra query rather than an embedding round-trip. **Caller-voice isolation** ([§10](#10-caller-voice-isolation-sace_audio)) denoises the microphone and drops any utterance that is not the enrolled caller *before* it reaches STT, so a colleague or a television in the room is never transcribed as the caller's answer. Both are open-source and local; neither depends on LiveKit.
 
 ---
 
@@ -510,9 +512,29 @@ Each assistant message stores its `turn` index, so the expander under turn 1 rea
 
 ---
 
-### `frontend/` — the live spectator dashboard
+### `frontend/` — the live dashboard
 
-See [§7](#7-the-live-dashboard-voice_agentpy--frontend) for the whole mechanism this powers.
+See [§7](#7-the-live-dashboard-voice_agentpy--frontend) for the whole mechanism this powers. Components: `CallStatusBar` (connection / call / audio state chips), `CallControls` (start agent · start call · end call · stop agent), `AudioToggles` (the two audio switches), `TranscriptView` (per-turn `⚡ cache` / `⚙ full pipeline` labels and the `saved for reuse` / `not saved` chips), `MemoryLookupCard` (the per-turn retrieval narration), `LearningFeed`, `ReviewQueue`/`ReviewCard`. Clients: `ws/useVoiceSocket.js` (spectator socket — receives events, sends `start_call` / `end_call` / `set_audio`), `api/review.js`, `api/voice.js` (`/voice/start|stop|status`).
+
+---
+
+### `sace_audio/` — caller-voice isolation
+
+`__init__.py` re-exports; `denoise.py` (`Denoiser` — spectral gate over `noisereduce`), `speaker.py` (`SpeakerGate`, `enroll_from_file`, `log_mel`, `_centre_crop`, `_cosine`, `save_enrollment` / `load_enrollment`), `stream.py` (`UtteranceFilter` — groups frames into utterances, applies both layers, exposes the runtime toggles).
+
+**Imports no `livekit`, by design** — it is the piece that survives replacing the framework. See [§10](#10-caller-voice-isolation-sace_audio).
+
+---
+
+### `scripts/enroll_voice.py`, `scripts/calibrate_speaker.py`
+
+`enroll_voice.py` records ~12s (or takes `--file`), downloads the ~26MB ONNX model on first run into `~/.cache/sace`, averages embeddings over overlapping windows, and **self-checks the enrolment against itself** before reporting success. `--check` prints what is currently enrolled. `calibrate_speaker.py` scores your recordings against others', reports whether the bands separate, and suggests a threshold placed in the gap.
+
+---
+
+### `api/main.py` — process control endpoints
+
+Alongside the chat-demo endpoints and `/review/*`: `GET /cache/stats`, `POST /cache/clear`, and `POST /voice/start` · `POST /voice/stop` · `GET /voice/status`, which spawn and kill `./run.sh voice` on behalf of the dashboard's Start button. See [§7](#starting-and-stopping-a-call-from-the-browser) for why that button has to route through this API rather than the websocket.
 
 ---
 
@@ -531,6 +553,18 @@ See [§7](#7-the-live-dashboard-voice_agentpy--frontend) for the whole mechanism
 ### `tests/test_voice_path.py`
 
 **Purpose.** Headless verification of the voice path's SACE integration — `SaceVoiceAgent`'s hooks (`on_user_turn_completed`, `llm_node`, `finish_turn`) exercised directly, without a live LiveKit room, a real microphone, or a Deepgram connection. This is what lets the injection/capture/timing logic in `voice_agent.py` be checked in CI. Also includes voice-path latency measurement (the `stt_ms`/`context_ms`/`llm_ttft_ms`/`tts_ttfb_ms` breakdown `finish_turn` computes and `record_turn` persists).
+
+**Known failing check.** `1. context + LLM TTFT within the 1.5s budget` fails against the live LLM and predates the cache work — it measures real network latency, not a regression.
+
+---
+
+### `tests/test_answer_cache.py`
+
+**Purpose.** Written to try to *break* the cache rather than confirm it works, and it says out loud what a green run does **not** prove (printed as caveats at the end, so a passing suite cannot be mistaken for more coverage than it has). Sections: **A** storage · **B** serving · **C** false hits (the dangerous failure — an unrelated question must never be served a stored reply) · **D** safety (dnc/abuse/emergency/terminal always run in full) · **E** latency (a hit is much faster; a *miss* costs ~nothing — the load-bearing claim) · **F** invalidation · **G** state leakage · **H** the structural rule, exhaustively over `kb.RULES` plus a rule invented in the test that is on no list, and the converse that a *learned* rule with `intent=None` is cacheable · **I** the trailing-question gate · **J** the two thresholds · **K** the caller's name (folded out on store, back in on serve).
+
+Sections H, I, J and K each exist because of a specific bug that shipped: a blocklist whose default was "allow", entries pinned to the wrong pending question, a dedup bar that collapsed the table, and a placeholder check that refused every turn on the script. Each was invisible from a green suite at the time.
+
+**Turns are driven through realistic multi-turn calls**, not one fresh call per message — cacheability is partly positional, so a suite that only ever drove first turns would test almost nothing while appearing green. An earlier version did exactly that.
 
 ---
 
@@ -597,6 +631,10 @@ A further structural safety property sits underneath the gates: **a learned rule
 
 ## 6. Honest limitations
 
+- **Every threshold in this system is embedding-model-specific, and there are now nine of them.** `GROUNDING_THRESHOLD` 0.45, `SPLICE_MARGIN` 0.08, `DUPLICATE_THRESHOLD` 0.72, `SAME_TOPIC_THRESHOLD` 0.6, `CACHE_THRESHOLD` 0.68, `DEDUP_THRESHOLD` 0.93, `SPEAKER_THRESHOLD` 0.45, plus the two VAD gates. Each was measured, but each was measured *separately* and against `text-embedding-3-small` (or, for the speaker gate, against synthetic voices on one machine). There is no single place that re-derives them, and nothing fails loudly if a model swap invalidates all nine at once. This is the largest maintenance liability in the codebase.
+
+- **Two bugs shipped where every individual check passed and the feature did nothing.** The cache's structural rule conflated seed and learned `intent=None`, and its placeholder check refused every reply containing the patient's name. In both cases the suite was green, each turn reported `grounded`, and the cache stored zero rows. The lesson is recorded here because the shape will recur: a filter with a deny-by-default posture needs a test asserting the *converse* — that the thing it is protecting is still reachable. Sections H3 and K of `test_answer_cache.py` are those tests.
+
 - **Duplicate and conflict thresholds have tight margins.** 0.72 and 0.6 were tuned against `text-embedding-3-small` and against *this* KB's rule lengths (0.72 itself replaced an earlier 0.85 after real near-duplicates were found slipping through it — see [§5](#5-the-three-verification-gates)). Short-candidate-vs-long-rule comparisons are still the weak case: cosine is length-sensitive, so a genuine duplicate expressed tersely can still score below 0.72 and be inserted. The thresholds do not transfer to a different embedding model or a KB with materially different rule lengths without re-tuning.
 
 - **LLM extraction can propose rules that are correct-looking but out of scope, and no gate catches that.** The three gates check *attestation*, *novelty*, and *contradiction* — not *permissibility*. An extraction run produced a rule instructing Maya to discuss **address changes**, which `STABLE_CORE` explicitly forbids her from raising. It was grounded (the caller really did mention it), novel, and contradicted nothing, so it passed all three gates cleanly. Scope is currently enforced only by the prompt at generation time, not by a gate at learning time. A fourth gate checking candidates against the core's prohibition list is the obvious missing piece.
@@ -625,13 +663,19 @@ A further structural safety property sits underneath the gates: **a learned rule
 
 - **The 5,782-token baseline is pinned, not recomputed.** It is a constant in `engine.py` measured once from `data/base_prompt_coverage.txt`. Editing that file does not update the savings figure.
 
-> **Note on this section.** The final bullet of the documentation request was cut off mid-sentence at "LLM extraction". I completed it as the extraction-scope limitation above, since that is the real gap I observed in this codebase, and added the further limitations I could substantiate from the code and test runs. Worth confirming that is what was intended.
+- **The voice path depends on a framework default staying off.** Preemptive generation bypasses the entire SACE pipeline (see [§7](#preemptive-generation-must-stay-off--this-is-a-correctness-constraint)). It is disabled explicitly and `llm_node` warns if it is ever reached off-pipeline, but a `livekit-agents` upgrade that renames or restructures that option would silently re-enable it. This is pinned to `1.6.7` for exactly this class of reason.
+
+- **`/voice/start` binds the *server's* microphone and is not safe on a shared host.** It exists so a demo can be driven from the browser; it spawns a shell script as a subprocess and does no authentication, because the API is assumed to be localhost-only.
+
+- **Caller-voice isolation supports exactly one enrolled speaker** and its defaults were measured on synthetic voices. It suits outbound calls to a known person; an inbound line answering strangers would need the gate off. See [§10](#honest-limitations-1).
 
 ---
 
 ## 7. The live dashboard (`voice_agent.py` + `frontend/`)
 
-Everything above this line describes what decides what Maya says. This section describes a separate, additive subsystem: a **watch-only browser dashboard** that narrates those decisions as they happen, for a person watching a live call. It changes nothing about how a call is handled — it is fed from the exact same values `voice_agent.py` already computes and the exact same rows it already writes to `turns`/`call_transcripts`. The one thing that flows the other way is an "end call" button.
+Everything above this line describes what decides what Maya says. This section describes a separate, additive subsystem: a **browser dashboard** that narrates those decisions as they happen, for a person watching a live call. It changes nothing about how a *reply* is decided — it is fed from the exact same values `voice_agent.py` already computes and the exact same rows it already writes to `turns`/`call_transcripts`.
+
+It began as strictly watch-only with a single "end call" button. It now also starts and ends calls, spawns and kills the agent process, and toggles the audio filters — session control rather than turn control. The line it still does not cross: nothing the dashboard sends can influence *what is said* inside a turn.
 
 ### Why it exists
 
@@ -645,7 +689,7 @@ sequenceDiagram
     participant Voice as voice_agent.py<br>(SaceVoiceAgent)
     participant DB as Postgres<br>(chunks / turns / call_transcripts)
     participant WS as WebSocket server<br>(_start_ws_server, port 8765)
-    participant Browser as frontend/<br>(dashboard, watch-only)
+    participant Browser as frontend/<br>(dashboard)
 
     Caller->>Voice: speaks (Deepgram STT finalises)
     Voice->>DB: build_turn_context: retrieve governing + reference rule
@@ -695,9 +739,47 @@ sequenceDiagram
 | `components/LearningFeed.jsx` | Post-call: renders each `learned` event as "learned something new — added to the '`<intent>`' section" / "already knew this — skipped as a duplicate" / "conflicts with what we already know — held for a person to check" / "discarded — not actually said on this call", each with its DB proof string (e.g. `id=learned_408c8991`, or the cosine and rule id it matched/conflicted against). |
 | `components/EndCallButton.jsx` | Sends `end_call`; disabled when not connected or no call is active. |
 
+### Preemptive generation must stay off — this is a correctness constraint
+
+`livekit-agents` 1.6.7 defaults `turn_handling.preemptive_generation.enabled = True`. When it fires, `AgentActivity.on_preemptive_generation` calls `_generate_reply` **directly on the first partial transcript**, bypassing `on_user_turn_completed` entirely — which is where this agent does all of its work: SACE retrieval, prompt assembly, and setting `self._pending`.
+
+`llm_node` then runs with `_pending` still `None`, falls through to `_delegate_llm`, and **the framework's raw LLM answers the caller**: no governing rule, no assembled prompt, no grounding check, no answer-cache lookup or store.
+
+It fails *quietly*, which is what makes it dangerous. The instructions are still on the agent, so the replies sound plausible; the only symptoms are `ttft —ms` in the latency line and a null `cache_stored` on the turn row. Observed live: every turn of a call answered off-pipeline while the dashboard displayed **"full pipeline · grounded"** for each one — the `grounded` label came from `validate_reply` scoring, after the fact, a reply the framework had produced.
+
+Three things now guard this:
+
+- `preemptive_generation=PreemptiveGenerationOptions(enabled=False)` in the session config, commented as load-bearing rather than a tuning knob
+- `llm_node` prints a loud `WARNING: this reply is being generated OFF-PIPELINE` if it is ever reached without a pending turn
+- `await self.update_instructions(...)` — it is a coroutine in 1.6.7 and was being called without `await`, raising `RuntimeWarning: coroutine ... was never awaited` and leaving the instructions un-updated. `_ensure_sace_system` in `llm_node` had been silently covering for it.
+
+**Re-enabling preemptive generation would require `llm_node` to rebuild the whole turn context itself, which defeats the point of preempting.** Anyone raising the latency budget should treat this as closed and look at the answer cache instead.
+
+### Starting and stopping a call from the browser
+
+The dashboard can now place calls, not only watch them. This crosses the watch-only line deliberately and in one narrow direction — it starts and ends *sessions*; it still cannot influence what is said inside one.
+
+There is a circularity that shapes the design: the Start button is served by Vite and its click travels over the websocket `voice_agent.py` opens, so **neither of those can start `voice_agent.py`**. Both must already be running for the button to be clickable. The one component that is always up and can spawn it is the FastAPI demo API:
+
+| State | Button | Path |
+|---|---|---|
+| agent down, nothing running | **Start agent & call** | `POST /voice/start` → API spawns `./run.sh voice` |
+| agent down, process still alive | **Start agent & call** · **Kill stray agent** | `POST /voice/stop` |
+| agent up, no call | **Start call** · **Stop agent** | websocket `start_call` |
+| call in progress | **End call & learn** | websocket `end_call` |
+
+Notes that matter:
+
+- **`run.sh voice`, not `python voice_agent.py console`.** `run.sh` activates the conda env, loads `.env`, brings the database up and checks the KB is populated; reimplementing that in the API would be a second copy of the boot sequence, guaranteed to drift.
+- **SIGINT, not SIGKILL.** The agent's shutdown callback runs the learning loop and persists the transcript; killing outright discards the call that just happened. It escalates to SIGKILL only after 25s, so expect a few seconds' delay on stop.
+- **`/voice/stop` kills every agent on the machine**, not only the one the API spawned (`pgrep -f voice_agent.py`). An agent started from a terminal is the common case, and a Stop that only handled its own children would silently do nothing exactly when it looked most broken.
+- **`/voice/start` waits 1.5s and re-checks** before reporting success, returning the log tail on failure. A missing `DEEPGRAM_API_KEY` or a down database fails immediately, and reporting "started" would send the user to wait on a websocket that never opens.
+- **A second call in the same process** required splitting `entrypoint` into `entrypoint` (job setup, once) + `run_call(ctx)` (repeatable). `entrypoint` now parks on `asyncio.Event().wait()`: `run_call` returns as soon as the opening line is spoken, and a LiveKit entrypoint returning ends the job and tears down the process — which would take the websocket server with it.
+- **Audio is the *server's* microphone.** Console mode binds the machine's mic and speakers, which only coincides with the browser's because this is a local demo. This endpoint is not safe on a shared host.
+
 ### What it deliberately does not do
 
-The dashboard is **watch-only** except for the one `end_call` message. It cannot inject a reply, alter retrieval, or skip a gate — every value it shows is something `voice_agent.py` had already computed and, in most cases, already persisted to `turns` or `call_transcripts` before the browser ever saw it. This is the same posture as the rest of the system's "nothing learned is applied silently" design: the dashboard makes the mechanism legible, it does not add a second place decisions can be made.
+The dashboard cannot inject a reply, alter retrieval, or skip a gate — every value it shows is something `voice_agent.py` had already computed and, in most cases, already persisted to `turns` or `call_transcripts` before the browser ever saw it. What it *can* do is start and end sessions and toggle the audio filters (§10); it adds no second place where the content of a reply is decided. This is the same posture as the rest of the system's "nothing learned is applied silently" design: the dashboard makes the mechanism legible.
 
 ### Relationship to the older chat demo
 
@@ -913,7 +995,7 @@ A cached reply is context-free — it cannot know what this call already asked o
 | **a contentless opening turn** | A bare "hello?" / "yes?" carries no question to match on, so it routes on almost nothing — observed landing on `ai_question`, which would have stored a greeting as the answer to "are you a robot?". Judged on the caller's message: fewer than 2 significant (non-filler) words on turn 1. This was originally a blanket "never cache turn 1", which was safe but unusable — a caller who asks a real question immediately ("hi, quick thing — is this recorded?") is asking on turn 1, so the blanket rule meant a natural short call could never populate the cache at all. |
 | **terminal rules** | A closing ends the call; replaying one by cosine accident hangs up on someone mid-conversation. |
 | **`critical` priority** | dnc, abuse, medical_emergency. The explicit safety rule, enforced in code. |
-| **flow rules — every rule with `intent=None`** | **The structural rule, and the one the design leans on.** The rule set already splits cleanly in two: a rule with no intent is part of the call *script* (`open_greeting`, `verify_identity`, `benefits_check`, the confirm/repeat rules — all 21 of them), and its correct reply depends on *where in the call* it fires rather than on what was asked. A rule *with* an intent is a diversion, whose reply is a fixed fact by construction. So cacheability is read off `governing.chunk.intent` rather than a list of names. This replaced a hand-maintained blocklist that was wrong in both directions — it named 16 rules and still missed six real flow rules, and anything added to `kb.py` later defaulted to **cacheable**, so a new flow rule would silently become replayable. A safety filter whose default is "allow" is not a safety filter. |
+| **flow rules — a *seed* rule with `intent=None`** | **The structural rule, and the one the design leans on.** The seed rule set splits cleanly in two: a rule with no intent is part of the call *script* (`open_greeting`, `verify_identity`, `benefits_check`, the confirm/repeat rules — all 21 of them), and its correct reply depends on *where in the call* it fires rather than on what was asked. A rule *with* an intent is a diversion, whose reply is a fixed fact by construction. So cacheability is read off the rule's own fields rather than a list of names. This replaced a hand-maintained blocklist that was wrong in both directions — it named 16 rules and still missed six real flow rules, and anything added to `kb.py` later defaulted to **cacheable**, so a new flow rule would silently become replayable. A safety filter whose default is "allow" is not a safety filter. **The `seed` qualifier is load-bearing — see the box below.** |
 | **specific intent-routed exceptions** | A few diversion rules are unsafe for reasons of their own, and *these* are named explicitly — a short list of exceptions to a rule that already defaults to deny. `special_callback_request` / `special_redirect` / `special_language` commit to this caller's data; `special_garbled_audio` / `special_frustration` carry no fixed fact at all, being only a re-ask of whatever was pending. |
 | **field extraction** | A reply that captured a county/name/number is about *that* caller; replaying it asserts a stranger's data back at someone. |
 | **placeholder leakage** | A reply containing the substituted patient name is personal to one call. |
@@ -922,6 +1004,37 @@ A cached reply is context-free — it cannot know what this call already asked o
 | **a reply that advanced the script** | A diversion reply may end by *returning to* the pending question, but not by asking a new one. If its trailing question is not the one that was already pending, the model advanced or invented rather than handing control back, and the reply is not a reusable answer-plus-re-ask. |
 
 Near-duplicate questions **update** rather than insert, so a common question cannot grow the table and slow the lookup it should be speeding up. The dedup bar (`DEDUP_THRESHOLD`, 0.93) is deliberately **higher** than the serve bar (`CACHE_THRESHOLD`, 0.68): when both were 0.68, anything similar enough to be *served* from a row was also similar enough to *overwrite* it, so the table could never hold two neighbouring phrasings of one question and coverage could not accumulate with use.
+
+### `intent=None` means two different things
+
+The structural rule above was shipped as *"`intent=None` ⇒ call script, never cacheable"*. That is true of the 39 hand-written rules in `kb.py` and **false of learned rules**, and the difference silently disabled most of the cache.
+
+The consolidator leaves `intent` NULL whenever the situation it extracted does not map onto the fixed router vocabulary (`manager.VALID_INTENTS`). So on a learned rule `intent=None` means **unclassified**, not **positional**. Measured on the live pool: **20 of 38 learned rules had `intent=None`**, and they were plainly FAQ-shaped — *"asks about services or amenities at the clinic"*, *"asks about specific treatment coverage"*, *"expresses concern about privacy"*, *"doubt about the legitimacy of the call"*. Exactly the turns the cache exists for, all excluded.
+
+The symptom was the worst kind: a live call could answer every FAQ correctly, report `grounded`, and store nothing at all — with every individual check passing and the suite green.
+
+`source` is the right discriminator. A learned rule exists *because* a caller went off-script, so it is a diversion by construction and was never part of a flow whose position could matter:
+
+| rule | cacheable? |
+|---|---|
+| `source="seed"` **and** `intent=None` | no — call script |
+| `source="seed"` with an intent | yes, subject to every other gate |
+| `source="learned"` (any intent, including NULL) | yes, subject to every other gate |
+
+Two consequences followed. `lookup()` had short-circuited `intent is None` and `store()` refused it outright — so even a NULL-section entry that got written could never be served. Both now query the general section properly. Coverage against the live pool went from **8 of 77 rules cacheable to 44 of 77**; the only learned rules still blocked are the two `dnc` ones, which is correct.
+
+### The caller's name is not a reason to refuse
+
+The first version refused any reply containing a value from `DEMO_PLACEHOLDERS`. The prompt instructs Maya to address the patient by first name, so **nearly every reply on this script contains it** — and every turn was refused as "caller-specific". Same failure shape as above: green suite, empty cache.
+
+Three of the five placeholders are not per-caller at all — the callback number, the clinic name and the current month are identical for every caller in the campaign, and a reply quoting them is exactly what *should* be cached. Only the patient's own name identifies one person, and even that does not have to disqualify the reply:
+
+- **store** folds the name back to `{patient_first_name}` (`normalise`), so the row holds no name to leak
+- **serve** substitutes the current caller's name back (`personalise`) — a hit never reaches prompt assembly, so without this the caller would hear the literal placeholder
+- the leak check runs on the *normalised* reply, so it now only fires on a name `normalise` could not fold
+- placeholders are stripped from the pending fingerprint too; leaving the name in gave every caller their own fingerprint and pinned every entry to the one call that produced it
+
+Verified end to end: `"Bhavya"` absent from the stored row, restored on serve, no placeholder leaked.
 
 ### The trailing-question gate
 
@@ -951,3 +1064,119 @@ A cache hit still produces a full, inspectable payload: `prompt_sent` explains t
 - **No TTL and no eviction.** Entries live until their section is invalidated or the cache is cleared. `hit_count` / `last_hit_at` are recorded to support LRU pruning later, but nothing prunes today.
 - **A hit is not re-validated.** The reply was grounded when stored; it is replayed on the strength of that. If a rule's text is edited without going through `review.approve`, nothing invalidates the entries derived from it.
 - **Cached turns bypass the `asked_questions` check on the voice path.** `step()` appends the cached reply's question to `asked_questions`, but a cached reply cannot itself know what was already asked — the flow-rule and turn-1 exclusions are what keep this from mattering, rather than any positive check.
+
+---
+
+## 10. Caller-voice isolation (`sace_audio/`)
+
+### The problem, and why VAD is not the answer
+
+Silero VAD answers **"is anyone speaking?"** — it gates on speech-vs-silence and cannot tell voices apart. A colleague talking nearby, a TV, or someone across the room clears its threshold, reaches Deepgram, and is transcribed as if the caller had said it. The turn loop then treats a stranger's words as the caller's answer.
+
+Raising the VAD threshold only filters by **loudness**. It drops distant, quiet speech; it does nothing about a clear voice next to the microphone, which is the case that matters most.
+
+Rejecting a voice *because of whose it is* needs a model conditioned on a reference — which means enrolment. That is what this package does.
+
+### What was tried first, and why it was removed
+
+LiveKit's `noise_cancellation.BVC()` does exactly this job and was implemented first. It was then **removed entirely**, for two reasons:
+
+1. **It runs on LiveKit's servers**, on the WebRTC audio track. Console mode (`./run.sh voice`) reads the local microphone directly and never sends audio through LiveKit, so BVC was silently inert in the mode used for every demo and test.
+2. **LiveKit is paid and is expected to be replaced.** Building a core audio guarantee on it would have to be undone later.
+
+`sace_audio` imports no `livekit`. That is a hard constraint, not a stylistic one — it is the piece that has to survive replacing the framework. The LiveKit-specific glue is ~20 lines in `SaceVoiceAgent.stt_node`.
+
+### The pipeline
+
+```
+mic frames → UtteranceFilter → denoise → speaker gate → Deepgram STT
+             (group frames)    (~6ms)     (~33ms)
+```
+
+| Module | Job | Honest limit |
+|---|---|---|
+| `denoise.py` | spectral-gate denoise (`noisereduce`, MIT) | removes fans, hum, traffic, room tone. **Passes other people's speech straight through** — to a spectral gate a colleague's voice is clean audio |
+| `speaker.py` | wespeaker ResNet34-LM via ONNX (Apache 2.0, ~26MB) | the layer that actually rejects other people; needs an enrolled voice |
+| `stream.py` | groups continuous frames into utterances | decides once per utterance, so audio is **held** until the utterance completes |
+
+Denoising is not there to reject anyone. It is there because a cleaner signal produces a more stable speaker embedding, and it improves STT accuracy on its own.
+
+### Why the decision is deferred to utterance level
+
+The speaker gate needs roughly a second of voice to produce a stable embedding, but audio arrives as ~20ms frames, and a single frame identifies nobody. `UtteranceFilter` buffers frames while someone is talking (simple RMS energy — enough to find *boundaries*; the gate makes the actual judgement), then denoises, scores, and either releases the whole utterance or drops it.
+
+There is no way to avoid the buffering: speaker identity is not knowable from the first 20ms, so a gate that forwarded frames immediately would already have leaked most of the utterance before it could judge. Silero is not reused for boundary detection because the framework owns that instance and consumes its own copy of the stream — reaching into it would couple this package to LiveKit's internals, which is the one thing it must not do.
+
+### Measured — discrimination
+
+Enrolled one voice, then scored three speakers on an **unseen** sentence:
+
+| speaker | cosine | verdict |
+|---|---|---|
+| enrolled | **0.894** | ACCEPT |
+| impostor A | 0.243 | REJECT |
+| impostor B | 0.251 | REJECT |
+
+The bands are far apart and `SPEAKER_THRESHOLD` (0.45) sits in the empty gap. End-to-end through the streaming filter: the enrolled speaker's 5.79s was forwarded, both impostors were dropped in full before STT. Live on a real call it dropped 1.2s of ambient room audio at cosine 0.085.
+
+### Measured — latency, and the cap that came out of it
+
+Inference cost is linear in utterance length while the embedding stops improving after about a second, so `MAX_EMBED_SEC` crops the **middle** of an utterance (edges hold onset, trailing breath and VAD padding):
+
+| cap | gate | enrolled | best impostor | separation |
+|---|---|---|---|---|
+| 1.0s | 23ms | 0.744 | 0.265 | 0.479 |
+| **1.5s** | **33ms** | **0.829** | **0.277** | **0.552** ← chosen |
+| 2.0s | 45ms | 0.863 | 0.296 | 0.568 |
+| 3.0s | 73ms | 0.895 | 0.254 | 0.641 |
+
+1.5s is the knee — almost all of 2.0s's separation for 25% less time. **Total added: ~39ms per utterance** (33ms gate + 6ms denoise), against turns that run 7,000–14,000ms end to end. That is ~0.3%, inside STT's own run-to-run variance (measured swinging 1,369→2,967ms between turns on the same call).
+
+An earlier estimate of ~11ms was wrong because it let ONNX Runtime use every core. Production pins it to one thread, so it does not steal cores from audio processing during a live call.
+
+### Fail-open, deliberately
+
+Missing model, no enrolment, or an inference error all cause every utterance to **pass**. A gate that failed closed would silently stop transcribing anyone, which from the caller's side is indistinguishable from the agent having hung up. With no enrolment the whole feature is inert and behaviour is exactly as it was before — it is opt-in.
+
+### Enrolment
+
+```bash
+python scripts/enroll_voice.py            # record 12s, downloads the model on first run
+python scripts/enroll_voice.py --check    # what is enrolled right now
+python scripts/calibrate_speaker.py me.wav --others them.wav
+```
+
+Enrolment averages embeddings over overlapping 3s windows rather than embedding one long clip — a single embedding of a 10s recording is dominated by whichever seconds happened to be loudest. It then **scores the enrolment against itself** and refuses to report success if that fails, because a silent microphone produces a confident embedding of nothing and the failure would otherwise only surface mid-call.
+
+`calibrate_speaker.py` exists because the default was measured on synthetic voices on one machine. Real numbers depend on your voice, microphone and room, and it reports whether the two bands actually separate rather than assuming they do. Run independently against the test recordings it suggested 0.44 against a default of 0.45.
+
+**Re-enrol when the microphone changes.** The embedding captures the whole capture chain, not just the voice — a headset and a laptop mic produce measurably different vectors for the same person, enough to push a genuine caller under the threshold. The agent prints a warning at end of call if every utterance was rejected, which is the signature of exactly this.
+
+### Runtime toggles
+
+Both layers switch independently from the dashboard (`set_audio` / `audio_state` over the spectator websocket). They are two switches rather than one "noise cancellation" control because collapsing them would hide the distinction the whole section is about: a denoiser cannot reject a person.
+
+`available` is reported separately from `enabled`. A layer with no enrolment or no library **cannot** be turned on, so it renders disabled with the reason attached rather than as an ordinary off switch that does nothing when clicked. The UI never flips optimistically — it renders the `audio_state` the agent echoes back, so a request to enable an unavailable layer ends up showing what is *actually* running.
+
+Toggling is free and applies from the next utterance: the enable flags are separate from the objects, so the ONNX session and enrolled reference stay loaded and turning the gate back on does not re-pay the ~100ms model load.
+
+### Tuning
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SPEAKER_THRESHOLD` | `0.45` | cosine required to accept. Errs low: clipping the real caller is worse than admitting one impostor, because the caller cannot tell why the agent stopped responding |
+| `SPEAKER_MIN_UTTERANCE` | `0.45` | shorter utterances pass unjudged — the script needs to hear "yes"/"no", which are too brief to embed reliably |
+| `SPEAKER_MAX_EMBED` | `1.5` | seconds embedded, from the middle |
+| `AUDIO_DENOISE` / `AUDIO_VOICE_GATE` | `on` | starting state of each toggle |
+| `AUDIO_SPEECH_RMS` | `0.01` | frame energy counting as speech |
+| `AUDIO_SILENCE_FRAMES` | `25` | quiet frames (~500ms) ending an utterance |
+| `VAD_ACTIVATION` | `0.6` | Silero's speech confidence (default 0.5). A **volume** gate, upstream of all of the above |
+| `VAD_MIN_SPEECH` | `0.20` | seconds of speech opening a turn (default 0.05 — short enough that a cough starts one) |
+
+### Honest limitations
+
+- **The threshold defaults were measured on synthetic voices** (macOS `say`) on one machine. Real voices, microphones and rooms differ; `calibrate_speaker.py` exists precisely because these should not be trusted unmeasured.
+- **One enrolled speaker.** There is no multi-speaker enrolment, so this suits outbound calls to a known person. An inbound line answering strangers would need the gate off.
+- **Utterance-level buffering adds a small delay before STT starts** on an utterance. Inside STT variance today, but it is real and it is inherent to the approach.
+- **Boundary detection is RMS energy, not VAD.** Crude by choice — it only finds boundaries — but a very quiet speaker in a noisy room could be mis-segmented, which would weaken the embedding rather than produce a wrong verdict.
+- **Denoising is spectral gating, not a neural model.** DeepFilterNet is better and was rejected on measurement: it imports torch (~2GB) despite a Rust backend that makes the wheel look torch-free, and installing it downgrades numpy 2.4.6 → 1.26.4, risking the rest of the stack.

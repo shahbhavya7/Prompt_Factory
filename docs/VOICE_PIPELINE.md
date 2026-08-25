@@ -218,29 +218,74 @@ to book an appointment, asking how to renew, or asking for a supervisor — got
 added: each is its own small, findable memory section rather than a patch
 bolted onto an existing one.
 
+## Hearing only the caller
+
+A phone call rarely happens in a quiet room. Someone else is talking nearby, a
+television is on, a colleague asks a question across the desk. All of that
+reaches the microphone, and unless something stops it, the agent hears a
+stranger's words and treats them as the caller's answer.
+
+The obvious tool doesn't solve this. Most "noise cancellation" removes *noise* —
+fans, traffic, hum. It cannot remove a *person*, because another human voice is
+speech, and to a noise filter speech is exactly what it's supposed to keep.
+
+So there are two separate layers, and it's worth knowing they do different jobs:
+
+```mermaid
+flowchart LR
+    Mic(("microphone"))
+    Denoise["remove background noise
+    (fans, traffic, hum)"]
+    Gate["is this the person
+    we called?"]
+    STT["turn speech
+    into text"]
+    Drop(("ignored"))
+
+    Mic --> Denoise --> Gate
+    Gate -- "yes" --> STT
+    Gate -- "no" --> Drop
+```
+
+The second layer works by being shown the caller's voice once, in advance — a
+short recording, done one time. After that it compares every spoken stretch
+against that recording and quietly ignores anything that doesn't match. Other
+voices never become text at all, so the agent never has a chance to answer them.
+
+Two honest caveats. It has to be set up first: with no recording, the layer is
+simply off and everything is transcribed, exactly as before. And it needs
+redoing if you change microphone — a headset and a laptop mic sound different
+enough that the agent may stop recognising you. If it ever starts ignoring
+*you*, that's the reason, and re-recording fixes it.
+
+Both layers can be switched on and off from the status page while a call is
+running.
+
 ## Watching a call happen
 
 Calls are answered by a program called `voice_agent.py`. While a call is in
 progress, that program can also feed a live status page in a browser — this
 is separate from the phone call itself, and only useful if someone wants to
-watch what's going on. It's watch-only for the most part: it shows, turn by
-turn, what memory was searched, which section got picked and why, how small
-the prompt actually was, and whether the reply that came back stuck to that
-section — plus, once the call ends, what (if anything) the agent decided to
-remember from it. The one thing that page can do besides watch is offer a
-button to end the call early.
+watch what's going on. It shows, turn by turn, what memory was searched, which
+section got picked and why, how small the prompt actually was, and whether the
+reply that came back stuck to that section — plus, once the call ends, what (if
+anything) the agent decided to remember from it.
+
+The page can also start a call, end one, and switch the two audio layers on or
+off. What it *cannot* do is change what the agent says: it starts and stops
+conversations, it doesn't take part in them.
 
 ```mermaid
 flowchart LR
     Agent["the program answering
     the call (voice_agent.py)"] -- "reports what it's
     doing, live" --> Page["a status page
-    in a browser (watch-only)"]
-    Page -- "can press:
-    end the call" --> Agent
+    in a browser"]
+    Page -- "can press: start a call,
+    end the call, audio on/off" --> Agent
 ```
 
-Nothing about how the call is handled changes because the page exists — it's
+Nothing about how a reply is decided changes because the page exists — it's
 just a window onto decisions the agent was already making and already saving
 to the database. If the page isn't open, the call runs exactly the same way.
 

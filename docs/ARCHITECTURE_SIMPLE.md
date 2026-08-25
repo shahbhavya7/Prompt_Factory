@@ -74,13 +74,43 @@ proposes waits for a person, who can approve it, rewrite it first, or throw it
 away. The automatic checks only decide what's worth a person's attention — they
 don't decide what goes into memory.
 
-## Watching a live call
+## Hearing only the caller
+
+Before a word reaches the "listen" step, two filters run on the microphone:
+
+```mermaid
+flowchart LR
+    Mic(("mic"))
+    D["denoise
+    (fans, hum, traffic)"]
+    G["speaker gate
+    is this the caller?"]
+    S["speech → text"]
+    X(("dropped"))
+    Mic --> D --> G
+    G -- "yes" --> S
+    G -- "no" --> X
+```
+
+They are separate because they do different jobs, and conflating them hides
+the important one: **a denoiser cannot reject a person** — another human voice
+is speech, which is exactly what it is built to preserve. Only the speaker gate
+rejects other people, and it does that by being shown the caller's voice once
+in advance (`scripts/enroll_voice.py`) and comparing every utterance against it.
+
+With no enrolment the gate is simply off and everything is transcribed, so the
+feature is opt-in. Both layers can be toggled from the dashboard mid-call.
+
+## Watching and driving a live call
 
 `voice_agent.py` is the agent that actually answers calls. While it's running,
 a small server inside it broadcasts what it's doing to a browser dashboard —
 so a person can watch, live, which piece of memory got picked for each turn
-and whether the reply stuck to it. The dashboard only *watches*; the one thing
-it can do back is press "End call."
+and whether the reply stuck to it.
+
+The dashboard can also **start** a call, end one, and switch the audio filters.
+What it cannot do is influence what gets said: it starts and stops
+conversations, it does not take part in them.
 
 ```mermaid
 flowchart LR
@@ -88,16 +118,22 @@ flowchart LR
     (answers the call)"] -- "what it found + decided,
     turn by turn" --> Server["small broadcast server
     inside the same process"]
-    Server -- "live updates" --> Dashboard["browser dashboard
-    (watch-only)"]
-    Dashboard -- "the one thing it can
-    send back: end call" --> Agent
+    Server -- "live updates" --> Dashboard["browser dashboard"]
+    Dashboard -- "start call · end call ·
+    audio on/off" --> Agent
+    Dashboard -- "start the agent itself" --> API["demo API
+    (spawns run.sh voice)"]
+    API --> Agent
 ```
+
+Starting the agent goes through the API rather than the dashboard's own
+connection, and it has to: that connection is opened *by* the agent, so it does
+not exist while the agent is down — which is exactly when "start it" is needed.
 
 Every card the dashboard shows is something the agent had already worked out
 for itself — memory search result, prompt size, whether the reply passed the
 grounding check, what the after-call learning step decided. Nothing on the
-dashboard side makes a decision; it just narrates what already happened.
+dashboard side decides what to say; it narrates what already happened.
 
 ## The two pieces together
 
@@ -168,6 +204,9 @@ to that caller. Those always go through the full process, every time.
 | Regeneration budget | 1 retry, with an explicit correction |
 | Reused-answer bar | cosine ≥ 0.68 (measured: same question 0.76–0.88, different question 0.12–0.54) |
 | Reused answer, cost | ~250ms vs ~1900ms for the full process (87% less) |
+| Reused-answer dedup bar | cosine ≥ 0.93 — higher than the serve bar on purpose, so the table can hold two phrasings of one question |
+| Speaker-gate bar | cosine ≥ 0.45 (measured: same speaker 0.89, different speakers 0.24–0.25) |
+| Audio filtering, cost | ~39ms per utterance (~0.3% of a 7–14s turn) |
 
 Full detail (every function, every table column, every edge case) is in
 [ARCHITECTURE.md](ARCHITECTURE.md). This page is the one-screen version.
