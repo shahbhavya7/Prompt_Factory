@@ -24,7 +24,7 @@ from sace_chat import answer_cache
 from sace_chat.assemble import build_turn_prompt
 from sace_chat.db import engine as db_engine
 from sace_chat.llm import build_messages, parse_json_object, render_messages
-from sace_chat.retrieve import IntentRouter, retrieve
+from sace_chat.retrieve import IntentRouter, pending_question, retrieve
 from sace_chat.tokens import est_tokens
 
 # Pinned monolith baseline for the savings comparison (data/base_prompt_coverage.txt).
@@ -243,7 +243,8 @@ def no_rule_decision(user_message: str, retrieval, elapsed_ms: float = 0.0) -> d
     }
 
 
-def cached_decision(user_message: str, retrieval, elapsed_ms: float = 0.0) -> dict:
+def cached_decision(user_message: str, retrieval, elapsed_ms: float = 0.0,
+                    history: list | None = None) -> dict:
     """The turn, served from a confirmed reply already in the cache.
 
     Zero LLM calls and zero prompt assembly: the reply was generated and
@@ -260,7 +261,26 @@ def cached_decision(user_message: str, retrieval, elapsed_ms: float = 0.0) -> di
     """
     hit = retrieval.cache_hit
     governing = retrieval.governing
-    reply = hit["reply"]
+    fact = hit["reply"]
+    reply = fact
+
+    # Fact + pending-question split (source='seed' rows only). A LIVE row
+    # (source='live') was produced by the LLM on some earlier real turn, and
+    # what got stored already IS the whole spoken turn — fact and re-ask
+    # together — so it is replayed as-is, same as before this existed. A
+    # SEEDED row (scripts/load_kb_renewal.py) was never spoken by anyone; it
+    # is only ever the bare fact half of an answer, so whatever question is
+    # actually still open on THIS call is appended here, on serve, as a pure
+    # string concatenation — no LLM, no embedding, no extra query, and never
+    # the question that was on the table when some OTHER call stored the row.
+    # Suppressed for T3/T4: a transfer line must end the handoff cleanly, not
+    # trail into a script question that no longer applies once a human is
+    # about to pick up.
+    pending_tail = None
+    if hit.get("source") == "seed" and hit.get("tier") not in ("T3", "T4"):
+        pending_tail = pending_question(history)
+        if pending_tail:
+            reply = f"{fact} {pending_tail}"
 
     # A cache hit sends no payload, but it must still be inspectable — the
     # transparency guarantee is that every turn can show what produced its
@@ -277,7 +297,14 @@ def cached_decision(user_message: str, retrieval, elapsed_ms: float = 0.0) -> di
         f"(bar: {answer_cache.CACHE_THRESHOLD})\n"
         f"Pending question it is pinned to: "
         f"{hit['pending_fingerprint'] or '(none — reusable on any turn)'}\n"
-        f"Replayed reply: {reply}"
+        + (
+            f"Fact (from cache): {fact}\n"
+            f"Pending question (from call state, stitched on serve): "
+            f"{pending_tail or '(none)'}\n"
+            if pending_tail is not None
+            else ""
+        )
+        + f"Replayed reply: {reply}"
     )
     messages = build_messages(explain, user_message)
     prompt_sent = render_messages(messages)
@@ -419,7 +446,8 @@ class Engine:
     def __init__(self, stable_core, rules=None, embedder=None, manager=None, llm=None,
                  monolith_text=None, table="chunks", chunks=None,
                  never_say_guard=None, never_say_fallback="",
-                 cache_table="answer_cache"):
+                 cache_table="answer_cache", t4_shortcircuit=None,
+                 intent_exemplars=None):
         self.stable_core = stable_core
         self.rules = rules if rules is not None else (chunks or [])
         self.embedder = embedder
@@ -435,7 +463,7 @@ class Engine:
         # medical_emergency, garbled_audio, frustration — be served on a
         # renewal call under the wrong clinic's script).
         self.cache_table = cache_table
-        self.router = IntentRouter(embedder)
+        self.router = IntentRouter(embedder, exemplars=intent_exemplars)
         # Optional (reply_text, case_record) -> (ok, reason) predicate, run in
         # prepare_reply only — see that method. None (the default) disables it
         # entirely, which is what every existing construction site gets: this
@@ -443,6 +471,10 @@ class Engine:
         # coverage's shipped behaviour. See sace_chat/guards.py.
         self._never_say_guard = never_say_guard
         self._never_say_fallback = never_say_fallback
+        # Optional message -> rule_id | None hook (guards.t4_shortcircuit),
+        # checked in retrieve() before anything is embedded. None disables it
+        # — every existing construction site (including coverage's) gets that.
+        self._t4_shortcircuit = t4_shortcircuit
 
     def _retrieve(self, state, message, history):
         with db_engine.connect() as conn:
@@ -451,6 +483,7 @@ class Engine:
                 history=history, router=self.router, table=self.table,
                 cache_table=self.cache_table,
                 precedence=self.manager.resolve_precedence,
+                t4_shortcircuit=self._t4_shortcircuit,
             )
 
     def build_turn_context(self, state, history, user_message):
@@ -555,7 +588,8 @@ class Engine:
         # is where all of the turn's latency lives.
         if retrieval.cache_hit is not None:
             dbg = cached_decision(
-                user_message, retrieval, (time.perf_counter() - start) * 1000
+                user_message, retrieval, (time.perf_counter() - start) * 1000,
+                history=history,
             )
             answer_cache.record_hit(retrieval.cache_hit["id"], table=self.cache_table)
             return dbg["turn_json"]["reply"], dbg
@@ -865,7 +899,8 @@ class Engine:
         # minimal: nothing was extracted and the call cannot have ended.
         if retrieval.cache_hit is not None:
             final = cached_decision(
-                user_message, retrieval, (time.perf_counter() - start) * 1000
+                user_message, retrieval, (time.perf_counter() - start) * 1000,
+                history=history,
             )
             answer_cache.record_hit(retrieval.cache_hit["id"], table=self.cache_table)
             reply_text = final["turn_json"]["reply"]

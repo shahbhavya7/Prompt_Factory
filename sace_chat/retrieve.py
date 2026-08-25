@@ -188,14 +188,15 @@ def _row_to_chunk(row) -> Chunk:
 
 
 class IntentRouter:
-    """Semantic intent classifier over kb.INTENT_EXEMPLARS.
+    """Semantic intent classifier over a campaign's exemplar set.
 
     Exemplar vectors are embedded once, on first use, in a single batch — with a
     network embedder, doing it per turn would add dozens of sequential
     round-trips to every reply.
     """
 
-    def __init__(self, embedder, threshold: float = INTENT_THRESHOLD, hotpath_embedder=None):
+    def __init__(self, embedder, threshold: float = INTENT_THRESHOLD,
+                 hotpath_embedder=None, exemplars: dict | None = None):
         # `embedder` is the KB embedder (pgvector-compatible). `hotpath` may be a
         # different, smaller, local model — exemplar matching never touches
         # Postgres, so its dimension only has to agree with itself. See
@@ -205,6 +206,18 @@ class IntentRouter:
         self.embedder = embedder
         self.hotpath = hotpath_embedder or get_hotpath_embedder(embedder)
         self.threshold = threshold
+        # Defaults to coverage's own INTENT_EXEMPLARS — every existing
+        # construction site that does not pass `exemplars` (including every
+        # coverage one) keeps its exact current behaviour. A campaign with
+        # its own exemplar set (CampaignConfig.intent_exemplars) passes it
+        # explicitly via Engine — see engine.py's __init__. Before this,
+        # EVERY campaign's intent detection silently ran against coverage's
+        # exemplars regardless of which campaign it belonged to, which meant
+        # a renewal caller saying "What's this paper?" (verbatim from
+        # RENEWAL_INTENT_EXEMPLARS['the_letter']) could never actually
+        # classify as 'the_letter' — it was scored against kb.py's own
+        # unrelated exemplar set instead.
+        self.exemplars = exemplars if exemplars is not None else INTENT_EXEMPLARS
         self._vectors: list[tuple[str, list[float]]] | None = None
 
     @property
@@ -215,7 +228,7 @@ class IntentRouter:
         if self._vectors is not None:
             return
         labels, texts = [], []
-        for intent, exemplars in INTENT_EXEMPLARS.items():
+        for intent, exemplars in self.exemplars.items():
             for exemplar in exemplars:
                 labels.append(intent)
                 texts.append(exemplar)
@@ -269,6 +282,17 @@ def _blend(message_vec, context_vec, weight: float = MESSAGE_WEIGHT):
     mixed = [weight * m + (1 - weight) * c for m, c in zip(message_vec, context_vec)]
     norm = sum(x * x for x in mixed) ** 0.5
     return [x / norm for x in mixed] if norm else mixed
+
+
+def _fetch_by_id(conn, rule_id: str, table: str) -> Chunk | None:
+    """One rule by its exact id — for the T4 short-circuit (guards.
+    t4_shortcircuit), which already knows exactly which rule must govern and
+    has no vector to rank candidates with in the first place."""
+    row = conn.execute(
+        text(f"SELECT {_SELECT_COLS} FROM {table} WHERE id = :id"),
+        {"id": rule_id},
+    ).fetchone()
+    return _row_to_chunk(row) if row is not None else None
 
 
 def _fetch_by_intent(conn, intent: str, qvec, table: str) -> Chunk | None:
@@ -404,14 +428,52 @@ def retrieve(
     cache_table: str = "answer_cache",
     precedence=None,
     use_cache: bool = True,
+    t4_shortcircuit=None,
 ) -> Retrieval:
     """`precedence` is an optional (intent, message) -> (intent, opt_out) hook,
     applied to the detected label before the rule is fetched — policy lives in
     manager.resolve_precedence and is injected here rather than duplicated, so
     a flip like dnc -> abuse changes which rule governs without a second query.
+
+    `t4_shortcircuit` is an optional `message -> rule_id | None` hook (see
+    guards.t4_shortcircuit) checked FIRST, before embedding anything — a hit
+    skips intent detection, the cache probe, and the pool query entirely and
+    returns the exact rule that already exists for this situation. None (the
+    default) disables it, same pattern as Engine's `never_say_guard`: this is
+    a renewal-specific safety concern, not a change to any other campaign.
     """
     router = router or IntentRouter(embedder)
     router.warm()
+
+    if t4_shortcircuit is not None:
+        rule_id = t4_shortcircuit(message)
+        if rule_id is not None:
+            chunk = _fetch_by_id(conn, rule_id, table)
+            if chunk is not None:
+                result = Retrieval(intent=chunk.intent, query_text=message)
+                result.governing = RetrievedRule(chunk, "governing", 1.0)
+                result.notes.append(
+                    f"T4 short-circuit: {rule_id!r} matched by safety rule, "
+                    f"not similarity — intent detection, cache probe and pool "
+                    f"query all skipped"
+                )
+                # Shaped exactly like answer_cache.lookup()'s return value so
+                # this rides the existing cache_hit path end to end —
+                # engine.cached_decision, the fact/pending split (suppressed
+                # here since tier is always T4), and the "⚡ cache" label all
+                # apply unchanged. Nothing is actually read from or written
+                # to a cache table for this turn.
+                result.cache_hit = {
+                    "id": f"t4-shortcircuit-{rule_id}",
+                    "question": message,
+                    "reply": chunk.text,
+                    "governing_rule_id": rule_id,
+                    "similarity": 1.0,
+                    "tier": chunk.tier,
+                    "source": "seed",
+                    "pending_fingerprint": "",
+                }
+                return result
 
     pending = pending_question(history)
     query_text = f"{message}   [pending: {pending}]" if pending else message

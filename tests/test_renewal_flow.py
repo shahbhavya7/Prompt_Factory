@@ -62,6 +62,7 @@ def main():
         stable_core=cfg.stable_core, rules=campaign.load_rules(cfg),
         embedder=embedder, manager=manager, llm=get_llm(), table=cfg.chunks_table,
         never_say_guard=cfg.never_say_guard, never_say_fallback=cfg.never_say_fallback,
+        intent_exemplars=cfg.intent_exemplars,
     )
     engine.router.warm()
 

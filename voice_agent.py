@@ -797,6 +797,8 @@ def build_engine() -> Engine:
         never_say_guard=CAMPAIGN.never_say_guard,
         never_say_fallback=CAMPAIGN.never_say_fallback,
         cache_table=CAMPAIGN.cache_table,
+        t4_shortcircuit=CAMPAIGN.t4_shortcircuit,
+        intent_exemplars=CAMPAIGN.intent_exemplars,
     )
     # Exemplars embedded once here, at startup, so no turn pays for them.
     engine.router.warm()

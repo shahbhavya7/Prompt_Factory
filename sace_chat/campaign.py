@@ -62,6 +62,10 @@ class CampaignConfig:
     # regeneration budget and the governing rule is not itself a transfer
     # rule with its own line to fall back to. "" for a campaign with no guard.
     never_say_fallback: str = ""
+    # message -> rule_id | None — checked in retrieve() before embedding
+    # (guards.t4_shortcircuit). None disables it entirely; coverage has no
+    # T4 tier and leaves this at the default.
+    t4_shortcircuit: object = None
 
 
 _CAMPAIGNS: dict[str, CampaignConfig] = {}
@@ -159,6 +163,7 @@ def _register_renewal() -> None:
         valid_intents=frozenset(kb_renewal.RENEWAL_VALID_INTENTS),
         never_say_guard=guards.check_never_say,
         never_say_fallback=fallback,
+        t4_shortcircuit=guards.t4_shortcircuit,
     ))
 
 

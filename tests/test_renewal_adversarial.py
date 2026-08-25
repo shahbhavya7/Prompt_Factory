@@ -15,6 +15,26 @@ A KB digression must never advance flow state (it is intent-routed, never
 touches the general pool's `requires` gate) and the flow step active before
 the digression must still be the one that governs immediately after it.
 
+POST-PHASE-2E NOTE: fixing IntentRouter's hardcoded `kb.INTENT_EXEMPLARS`
+(see retrieve.py — it previously ignored CampaignConfig.intent_exemplars
+entirely, so renewal's intent detection never actually classified anything
+against renewal's own exemplars) makes digression routing genuinely work for
+the first time, but it also surfaced a real, unresolved content collision:
+several of the PDF-sourced flow rules' own scripted caller cues surface-
+overlap with unrelated CSV-sourced intent exemplars — e.g. "No, I never got
+it." (willingness_ask's own cue) scores 0.551 against 'eligibility' ("Do I
+get it?"), and "No, I haven't sent it in yet." brushes 'help' ("Will you
+send it in?"). Both clear INTENT_THRESHOLD (0.45) and hijack a flow turn
+into an unrelated diversion. This is a data problem between two
+independently-sourced corpora (PDF dialogue vs. CSV phrasings), not a code
+bug, and is flagged here rather than hand-patched — fixing it would mean
+editing sourced cue/exemplar text, which earlier phases were explicitly told
+never to hand-author. Several of the per-turn expectations below are
+consequently stale (documented as FAIL, not silently updated to match) —
+this file's value going forward is as a regression fixture for the identity/
+gating fix (checks 1-5, 9, 11, 15, 18 above stay green) and as the reproducer
+for this collision, not as a currently-100%-green suite.
+
 Run:  python tests/test_renewal_adversarial.py
 """
 
@@ -86,6 +106,7 @@ def main():
         stable_core=cfg.stable_core, rules=campaign.load_rules(cfg),
         embedder=embedder, manager=manager, llm=get_llm(), table=cfg.chunks_table,
         never_say_guard=cfg.never_say_guard, never_say_fallback=cfg.never_say_fallback,
+        intent_exemplars=cfg.intent_exemplars,
     )
     engine.router.warm()
 
