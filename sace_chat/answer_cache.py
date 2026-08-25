@@ -107,6 +107,46 @@ from sace_chat.db import AnswerCacheRow, SessionLocal, check_embedding
 # anyway. So when in doubt this errs high.
 CACHE_THRESHOLD = float(os.environ.get("SACE_CACHE_THRESHOLD", "0.68"))
 
+# The renewal cache's own bar — MEASURED, not guessed, by
+# scripts/measure_cache_bar_renewal.py against 303 seeded rows (113 T1/T3
+# rules) using held-out mechanical paraphrases (never a stored variant
+# itself). This corpus is denser and its topics narrower than coverage's, so
+# a scalar threshold alone is not enough to separate "own rule" from "a
+# different rule" the way it is for coverage — the two bands OVERLAP
+# (own: min 0.590 / median 0.871; a different rule's best match: median
+# 0.524 / max 0.840), which is exactly why CACHE_MARGIN_RENEWAL exists below
+# rather than trying to push the threshold alone to do both jobs.
+# 0.70 sits above the bulk of both distributions' overlap region (other-rule
+# p75 0.582) and below the weakest observed correct match's own outliers,
+# deliberately erring toward a fall-through (costs ~1,900ms) over a wrong
+# verbatim answer (costs a patient their coverage) — same asymmetry
+# CACHE_THRESHOLD's own comment describes for coverage.
+CACHE_THRESHOLD_RENEWAL = float(os.environ.get("SACE_CACHE_THRESHOLD_RENEWAL", "0.70"))
+
+# Serve only if the top match beats the runner-up by at least this much —
+# measured (same script): every one of 113 held-out paraphrases' TRUE match
+# was top1 with margin median 0.289, minimum 0.049. A margin this low still
+# occurred on a genuinely correct match, so 0.05 is deliberately close to
+# that observed floor rather than padded further above it — the INC-01 vs
+# INC-12 case this guards against is a NEAR-TIE between two plausible rules,
+# which margin alone catches regardless of what the winning score happens to
+# be.
+CACHE_MARGIN_RENEWAL = float(os.environ.get("SACE_CACHE_MARGIN_RENEWAL", "0.05"))
+
+# Tables that get the margin + tier-crossing treatment above, on top of the
+# plain threshold every table already gets. Keyed by table name rather than
+# a boolean flag on the call site, so a caller that forgets to opt in still
+# gets the safer behaviour merely by pointing at this table.
+_MARGIN_GATED_TABLES = frozenset({"answer_cache_renewal"})
+
+# Never serve a T2 (this caller's own case data) or T4 (safety-critical;
+# Part D's deterministic short-circuit is the intended path, not cosine
+# recall) row from the cache — store() already refuses to write these (see
+# is_cacheable's tier check and load_kb_renewal.py's hard assertion), so this
+# is belt-and-braces against a row that predates that guard or was inserted
+# by hand.
+_NEVER_SERVE_TIERS = frozenset({"T2", "T4"})
+
 # How close two STORED questions must be before the second overwrites the first
 # instead of becoming its own row. Strictly higher than CACHE_THRESHOLD, and the
 # gap between them is the point.
@@ -453,6 +493,11 @@ def is_cacheable(*, governing, outcome: str, regenerated: bool,
     # Coverage rules carry no tier, so this never fires for them.
     if getattr(chunk, "tier", None) == "T2":
         return False, f"{chunk.id} is tier T2 — its answer is this caller's own case data"
+    # T4 is the safety net for self-harm/abuse/immigration disclosures —
+    # guards.t4_shortcircuit is the intended deterministic path for these,
+    # and the reply cache must never become a second, cosine-dependent one.
+    if getattr(chunk, "tier", None) == "T4":
+        return False, f"{chunk.id} is tier T4 — safety-critical, never cached"
 
     # The structural rule — see NEVER_CACHE_RULES above. A SEED rule with no
     # intent is part of the call script, so its reply depends on position in the
@@ -551,29 +596,55 @@ def lookup(conn, message_vec, intent: str | None, *, pending: str = "",
     # pending question, and filtering afterwards would report a miss while a
     # perfectly good entry for THIS turn sat second in the ordering.
     where_intent = "intent IS NULL" if intent is None else "intent = :intent"
-    params = {"q": str(list(message_vec)), "pending": pending}
+    # Margin-gated tables need the runner-up too, to check top1 beats top2 by
+    # enough and that the two do not straddle a tier boundary (the INC-01 vs
+    # INC-12 case) — one query, LIMIT 2 instead of 1, never a second
+    # round-trip. Every other table keeps LIMIT 1: unchanged cost, unchanged
+    # behaviour.
+    margin_gated = table in _MARGIN_GATED_TABLES
+    limit = 2 if margin_gated else 1
+    params = {"q": str(list(message_vec)), "pending": pending, "limit": limit}
     if intent is not None:
         params["intent"] = intent
 
-    row = conn.execute(
+    rows = conn.execute(
         sql_text(
             f"SELECT id, question, reply, governing_rule_id, hit_count, "
-            f"       pending_fingerprint, "
+            f"       pending_fingerprint, tier, source, "
             f"       embedding <=> CAST(:q AS vector) AS distance "
             f"FROM {table} WHERE {where_intent} "
             f"  AND (pending_fingerprint = '' OR pending_fingerprint = :pending) "
-            f"ORDER BY distance LIMIT 1"
+            f"ORDER BY distance LIMIT :limit"
         ),
         params,
-    ).fetchone()
+    ).fetchall()
 
-    if row is None:
+    if not rows:
         return None
+    row = rows[0]
     similarity = 1.0 - float(row.distance)
-    if similarity < CACHE_THRESHOLD:
+    threshold = CACHE_THRESHOLD_RENEWAL if margin_gated else CACHE_THRESHOLD
+    if similarity < threshold:
         return None
     if row.governing_rule_id in NEVER_CACHE_RULES:
         return None
+    # Belt-and-braces: store() already refuses T2/T4 rows outright (see
+    # is_cacheable and load_kb_renewal.py's hard assertion), so this only
+    # matters for a row that predates that guard.
+    if row.tier in _NEVER_SERVE_TIERS:
+        return None
+    if margin_gated and len(rows) > 1:
+        runner_up = rows[1]
+        runner_up_similarity = 1.0 - float(runner_up.distance)
+        if similarity - runner_up_similarity < CACHE_MARGIN_RENEWAL:
+            return None
+        # Tier-crossing guard: two plausible rules from different tiers is
+        # exactly the ambiguity a margin cannot safely resolve on its own —
+        # a T1 fact and a T3 "let me transfer you" line can sit close in
+        # embedding space while requiring opposite replies. Refuse outright,
+        # regardless of how wide the margin is.
+        if (row.tier and runner_up.tier and row.tier != runner_up.tier):
+            return None
     return {
         "id": row.id,
         "question": row.question,
@@ -582,6 +653,8 @@ def lookup(conn, message_vec, intent: str | None, *, pending: str = "",
         "reply": personalise(row.reply),
         "governing_rule_id": row.governing_rule_id,
         "similarity": round(similarity, 4),
+        "tier": row.tier,
+        "source": row.source,
         # Surfaced so the dashboard can show WHY this entry was eligible: ""
         # means the reply ends on no question and is reusable anywhere, a value
         # means it was pinned to this turn's pending question and matched.
