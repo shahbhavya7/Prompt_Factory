@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 
@@ -14,6 +15,7 @@ from sqlalchemy import (
     create_engine,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.sql import func
 
@@ -52,6 +54,38 @@ class ChunkRow(Base):
     learned_kind = Column(String, nullable=True)
 
     embedding = Column(Vector(EMBEDDING_DIM), nullable=False)
+
+    # A campaign's own answer tier (e.g. renewal's T1-T4), carried through
+    # from its source KB for reporting and for cache/priority policy that
+    # reads it (see answer_cache.is_cacheable). NULL for campaigns with no
+    # tier concept — coverage.
+    tier = Column(String, nullable=True)
+    # Whether this rule's reply is expected to hand the caller to a human
+    # (renewal's T3/T4). Read by the never-say guard's fallback: a violation
+    # on a transfer rule re-speaks that rule's OWN verbatim text rather than
+    # inventing a new line.
+    transfer = Column(Boolean, nullable=False, default=False)
+
+    # Prerequisite gating for a FLOW rule (intent IS NULL, source='seed'): the
+    # subset of state.collected_fields that must already hold before this
+    # step may govern a turn. {} (the default) means "no prerequisite" — every
+    # existing coverage rule. Read by retrieve._fetch_general, which excludes
+    # a row whose requires are not satisfied BEFORE ranking by distance — see
+    # that function's docstring for why this has to happen in SQL, not after
+    # the fetch. A value of "__any__" means "this key must be SET, any value"
+    # rather than an exact match — e.g. {"has_camera_phone": "__any__"}.
+    requires = Column(JSONB, nullable=False, default=dict)
+    # Which collected_fields key(s) this rule's own turn is expected to
+    # populate, once accepted — documentation/audit only; nothing enforces it
+    # mechanically. The rule's own text is what actually instructs the model
+    # to extract the field (mirroring kb.py's existing convention, e.g.
+    # still_has_benefits_plan_check's "Add a county field to extracted_fields").
+    sets = Column(JSONB, nullable=False, default=dict)
+    # A flow rule's fixed position in its script, used ONLY as the fallback
+    # tie-breaker when nothing else governs (see retrieve.py's "lowest-
+    # numbered eligible step" fallback) — never as a ranking signal otherwise.
+    # NULL for anything that isn't a flow rule.
+    step_order = Column(Integer, nullable=True)
 
 
 class TurnRow(Base):
@@ -261,6 +295,11 @@ def init_db():
             "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS exclusive BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS source VARCHAR NOT NULL DEFAULT 'seed'",
             "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS learned_kind VARCHAR",
+            "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tier VARCHAR",
+            "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS transfer BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS requires JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS sets JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS step_order INTEGER",
         ):
             conn.execute(text(ddl))
 
@@ -296,6 +335,20 @@ def init_db():
         # of reading every row to check whether it qualifies. Same effect for
         # `intent IS NULL` (the general pool) as for a specific label.
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chunks_intent ON chunks (intent)"))
+
+        # A second campaign's rule pool. LIKE ... INCLUDING ALL clones every
+        # column (including the ones just migrated above), default, index and
+        # constraint from `chunks` at CREATE time — one physical table per
+        # campaign is what keeps two campaigns' general pools (intent IS NULL)
+        # from ever competing for the same turn; see campaign.py's module
+        # docstring. Placed AFTER the chunks migrations above so a fresh
+        # chunks_renewal always matches chunks' current shape.
+        # INCLUDING ALL brings the intent index (and the primary key, defaults,
+        # etc.) along with it under a freshly generated name — no separate
+        # CREATE INDEX needed here.
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS chunks_renewal (LIKE chunks INCLUDING ALL)"
+        ))
 
         # needs_review grew from "a log of rejections" into the human approval
         # queue, so the columns an approval needs to rebuild a Chunk (cue,
@@ -455,26 +508,71 @@ def record_call_transcript(session_id, source, transcript, turn_count, learning_
     return row_id
 
 
-def insert_chunk(session, chunk, embedder, learned_kind=None, source=None):
+def insert_chunk(session, chunk, embedder, learned_kind=None, source=None, table="chunks"):
     """The single insert path, shared by load_kb.py and consolidator.py, so the
     two can never disagree about which columns get set.
 
     The embedding comes from the CUE, not the rule text — see models.Chunk.cue.
+
+    `table="chunks"` (the default) goes through the ChunkRow ORM object,
+    unchanged from before campaigns existed. Any other table — a second
+    campaign's own pool, e.g. "chunks_renewal" — goes through a raw-SQL
+    upsert instead, because ChunkRow is bound to the single physical table
+    name "chunks" and cannot target another one.
     """
     cue = (chunk.cue or "").strip() or chunk.text
     vec = check_embedding(embedder.embed(cue), chunk_id=chunk.id)
-    row = ChunkRow(
-        id=chunk.id,
-        title=chunk.title,
-        text=chunk.text,
-        cue=cue,
-        intent=chunk.intent,
-        priority=chunk.priority,
-        terminal=bool(chunk.terminal),
-        exclusive=bool(chunk.exclusive),
-        source=source or ("learned" if learned_kind else chunk.source),
-        learned_kind=learned_kind or chunk.learned_kind,
-        embedding=vec,
+    resolved_source = source or ("learned" if learned_kind else chunk.source)
+    resolved_learned_kind = learned_kind or chunk.learned_kind
+
+    if table == "chunks":
+        row = ChunkRow(
+            id=chunk.id,
+            title=chunk.title,
+            text=chunk.text,
+            cue=cue,
+            intent=chunk.intent,
+            priority=chunk.priority,
+            terminal=bool(chunk.terminal),
+            exclusive=bool(chunk.exclusive),
+            source=resolved_source,
+            learned_kind=resolved_learned_kind,
+            embedding=vec,
+            tier=chunk.tier,
+            transfer=bool(chunk.transfer),
+            requires=dict(chunk.requires),
+            sets=dict(chunk.sets),
+            step_order=chunk.step_order,
+        )
+        session.merge(row)
+        return row
+
+    session.execute(
+        text(
+            f"INSERT INTO {table} "
+            f"(id, title, text, cue, intent, priority, terminal, exclusive, "
+            f" source, learned_kind, tier, transfer, requires, sets, step_order, embedding) "
+            f"VALUES (:id, :title, :ctext, :cue, :intent, :priority, :terminal, :exclusive, "
+            f" :source, :learned_kind, :tier, :transfer, CAST(:requires AS jsonb), "
+            f" CAST(:sets AS jsonb), :step_order, CAST(:vec AS vector)) "
+            f"ON CONFLICT (id) DO UPDATE SET "
+            f"  title=EXCLUDED.title, text=EXCLUDED.text, cue=EXCLUDED.cue, "
+            f"  intent=EXCLUDED.intent, priority=EXCLUDED.priority, "
+            f"  terminal=EXCLUDED.terminal, exclusive=EXCLUDED.exclusive, "
+            f"  source=EXCLUDED.source, learned_kind=EXCLUDED.learned_kind, "
+            f"  tier=EXCLUDED.tier, transfer=EXCLUDED.transfer, "
+            f"  requires=EXCLUDED.requires, sets=EXCLUDED.sets, "
+            f"  step_order=EXCLUDED.step_order, embedding=EXCLUDED.embedding"
+        ),
+        {
+            "id": chunk.id, "title": chunk.title, "ctext": chunk.text, "cue": cue,
+            "intent": chunk.intent, "priority": chunk.priority,
+            "terminal": bool(chunk.terminal), "exclusive": bool(chunk.exclusive),
+            "source": resolved_source, "learned_kind": resolved_learned_kind,
+            "tier": chunk.tier, "transfer": bool(chunk.transfer),
+            "requires": json.dumps(dict(chunk.requires)),
+            "sets": json.dumps(dict(chunk.sets)),
+            "step_order": chunk.step_order, "vec": str(list(vec)),
+        },
     )
-    session.merge(row)
-    return row
+    return chunk

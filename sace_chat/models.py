@@ -41,3 +41,33 @@ class Chunk:
     learned_kind: str | None = None
     # Provenance extras only; never queried.
     tags: dict = field(default_factory=dict)
+
+    # A campaign's own answer tier (e.g. renewal's T1-T4). None for campaigns
+    # with no tier concept — coverage.
+    tier: str | None = None
+    # Whether this rule's reply is expected to hand the caller to a human.
+    # Read by the never-say guard's fallback (see sace_chat/guards.py).
+    transfer: bool = False
+    # Prerequisite gating for a FLOW rule (intent=None): the subset of
+    # state.collected_fields that must already hold before this step may
+    # govern a turn. {} means "no prerequisite" — every existing coverage
+    # rule. A value of "__any__" means "this key must be SET, any value"
+    # rather than an exact match. See retrieve._fetch_general.
+    requires: dict = field(default_factory=dict)
+    # {field: default_value} this rule's own turn is expected to populate in
+    # collected_fields once accepted. Not documentation-only: the model does
+    # not reliably emit a synthetic gating field on its own initiative even
+    # when the rule's text asks for it (measured: it extracts a different,
+    # more "natural" field instead, or nothing) — so Engine deterministically
+    # fills in any field here the model's own extracted_fields is missing,
+    # the same way `terminal` already overrides the model's own
+    # call_should_end rather than trusting it. Which rule governed the turn
+    # already answers the question for a field named here (the rule was
+    # chosen by cue similarity to what the caller actually said), so its
+    # default is authoritative for a field with no better answer.
+    sets: dict = field(default_factory=dict)
+    # A flow rule's fixed position in its script — the fallback tie-breaker
+    # when nothing else governs (retrieve.py's "lowest-numbered eligible
+    # step"), never a ranking signal otherwise. None for anything that isn't
+    # a flow rule.
+    step_order: int | None = None

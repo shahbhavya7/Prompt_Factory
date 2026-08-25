@@ -19,6 +19,7 @@ said after "would you like me to repeat the number?" — the message alone is
 genuinely ambiguous, and the rule texts are written to match the pair.
 """
 
+import json
 from dataclasses import dataclass, field as dc_field
 
 from sqlalchemy import text
@@ -26,6 +27,23 @@ from sqlalchemy import text
 from sace_chat.embeddings import embed_many
 from sace_chat.kb import INTENT_EXEMPLARS
 from sace_chat.models import Chunk
+
+# Sentinel for a `requires` value meaning "this collected_fields key must be
+# set, to anything" rather than an exact match — e.g. a step that only cares
+# whether the caller has answered a question at all, not what they said.
+REQUIRES_ANY_SET = "__any__"
+
+# Sentinel for a `requires` value meaning "this collected_fields key must NOT
+# be set at all" — the mirror of REQUIRES_ANY_SET. This is what protects a
+# flow rule against firing again after its own job is done: a rule that sets
+# no field of its own (e.g. it only ASKS a question, and a LATER rule
+# captures the answer) has nothing else to gate on to keep it from remaining
+# a candidate forever, including on turns nowhere near it in the script —
+# see retrieve.py's general-pool branch and the fallback it feeds, both of
+# which would otherwise regress to the lowest-numbered rule with an empty
+# `requires` every time similarity alone dips, defeating the whole point of
+# "resume from roughly where the call actually is."
+REQUIRES_NOT_SET = "__not_set__"
 
 # Cosine above which the closest intent exemplar claims the turn.
 INTENT_THRESHOLD = 0.45
@@ -51,7 +69,10 @@ MESSAGE_WEIGHT = 0.9
 # this gate, "tell me a joke" can land on a phone-number repeat rule.
 GENERAL_MIN_SIMILARITY = 0.30
 
-_SELECT_COLS = "id, title, text, intent, priority, terminal, exclusive, source, learned_kind"
+_SELECT_COLS = (
+    "id, title, text, intent, priority, terminal, exclusive, source, learned_kind, "
+    "tier, transfer, requires, sets, step_order"
+)
 
 # Priority ranks strictly ABOVE distance — but only inside an intent's own rule
 # set, never across the general pool. The two candidate sets differ in kind:
@@ -98,6 +119,14 @@ class CallState:
     # re-ask one.
     asked_questions: list = dc_field(default_factory=list)
     collected_fields: dict = dc_field(default_factory=dict)
+    # This call's own injected system-of-record data (e.g. its real due date),
+    # for a campaign whose rules read specific facts instead of only speaking
+    # policy prose. Never populated by the model — set once, from wherever the
+    # call's case data actually comes from — and used two ways: as the
+    # never-say guard's exemption set (guards.check_never_say) and, for a
+    # T2-tier rule, as the source of the value the rule's own text says to
+    # read. Empty for a campaign with no case-record concept — coverage.
+    case_record: dict = dc_field(default_factory=dict)
 
 
 @dataclass
@@ -147,6 +176,14 @@ def _row_to_chunk(row) -> Chunk:
         exclusive=bool(row.exclusive),
         source=row.source or "seed",
         learned_kind=row.learned_kind,
+        tier=row.tier,
+        transfer=bool(row.transfer),
+        # psycopg2 deserialises jsonb to a Python dict/list already; a legacy
+        # row from before these columns existed reads back as None, so an
+        # explicit fallback keeps every caller's dict/list assumption true.
+        requires=row.requires if row.requires is not None else {},
+        sets=row.sets if row.sets is not None else {},
+        step_order=row.step_order,
     )
 
 
@@ -256,18 +293,69 @@ def _fetch_by_intent(conn, intent: str, qvec, table: str) -> Chunk | None:
     return chunk
 
 
-def _fetch_general(conn, qvec, table: str, k: int = 2) -> list[Chunk]:
+# The prerequisite check shared by _fetch_general and the lowest-eligible-step
+# fallback: a row's `requires` must be fully satisfied by the CALLER'S current
+# collected_fields before it may be considered at all. Expressed as
+# `NOT EXISTS (any requirement that fails)`, so a row with `requires = {}`
+# (every existing coverage rule) always passes — there is nothing to fail.
+#
+# This runs INSIDE the SQL, not filtered out of a Python list after the
+# fetch: filtering post-fetch would let a `LIMIT k` truncate the result set
+# to ineligible rows before eligible ones are ever seen, silently leaving a
+# turn with nothing in scope even though an eligible flow step exists further
+# down the distance ordering.
+#
+# A `False` requirement is deliberately NOT an exact match against the state.
+# The field it names (e.g. packet_received) is set by the very turn whose
+# CALLER MESSAGE decides between two branches — "no, we moved" sets it False,
+# "yes it arrived" sets it True — and retrieval for that decisive turn runs
+# BEFORE that turn's own extraction lands in collected_fields. An exact-match
+# "False" would then never be satisfied on the one turn it exists to gate:
+# the field is simply absent yet, not yet false. So `False` means "not yet
+# confirmed true" (absent OR false both pass; only an explicit True blocks) —
+# a guard against relapsing into this step once the flow has moved past it,
+# not the mechanism that picks the branch in the first place. Picking the
+# branch is still cue-similarity's job, same as every other diversion in this
+# codebase; `requires` only ever narrows the candidate set, it never ranks it.
+_REQUIRES_SATISFIED_SQL = f"""
+    NOT EXISTS (
+        SELECT 1 FROM jsonb_each_text(requires) AS req(key, val)
+        WHERE
+            CASE WHEN req.val = '{REQUIRES_ANY_SET}'
+                 THEN NOT (CAST(:state AS jsonb) ? req.key)
+                 WHEN req.val = '{REQUIRES_NOT_SET}'
+                 THEN (CAST(:state AS jsonb) ? req.key)
+                 WHEN req.val = 'false'
+                 THEN (CAST(:state AS jsonb) ->> req.key) = 'true'
+                 ELSE (CAST(:state AS jsonb) ->> req.key) IS DISTINCT FROM req.val
+            END
+    )
+"""
+
+
+def _state_json(state) -> str:
+    """collected_fields as a JSON blob, for the requires-gate SQL parameter.
+
+    A plain dict of JSON-serialisable values by construction — it is filled
+    only from validate_turn's extracted_fields, which is itself already
+    constrained to a JSON-decoded model response.
+    """
+    return json.dumps(dict(getattr(state, "collected_fields", None) or {}))
+
+
+def _fetch_general(conn, state, qvec, table: str, k: int = 2) -> list[Chunk]:
     rows = conn.execute(
         text(
             f"""
             SELECT {_SELECT_COLS}, embedding <=> :qvec AS distance
             FROM {table}
             WHERE intent IS NULL
+              AND {_REQUIRES_SATISFIED_SQL}
             ORDER BY distance
             LIMIT :k
             """
         ),
-        {"qvec": str(list(qvec)), "k": k},
+        {"qvec": str(list(qvec)), "k": k, "state": _state_json(state)},
     ).fetchall()
     out = []
     for row in rows:
@@ -275,6 +363,34 @@ def _fetch_general(conn, qvec, table: str, k: int = 2) -> list[Chunk]:
         chunk.tags["distance"] = float(row.distance)
         out.append(chunk)
     return out
+
+
+def _fetch_lowest_eligible_step(conn, state, table: str) -> Chunk | None:
+    """The flow rule with the smallest `step_order` whose prerequisites are
+    currently satisfied — the fallback when nothing governs by similarity.
+
+    Never chosen by distance: this is a deterministic "resume the script from
+    wherever it can currently continue" pick, used only when similarity-based
+    retrieval found nothing usable (either every flow rule was filtered out,
+    or the best match fell under GENERAL_MIN_SIMILARITY). A flow call must
+    not close itself by exhaustion the way a diversion-only campaign safely
+    can — see retrieve()'s general-pool branch.
+    """
+    row = conn.execute(
+        text(
+            f"""
+            SELECT {_SELECT_COLS}
+            FROM {table}
+            WHERE intent IS NULL
+              AND step_order IS NOT NULL
+              AND {_REQUIRES_SATISFIED_SQL}
+            ORDER BY step_order ASC
+            LIMIT 1
+            """
+        ),
+        {"state": _state_json(state)},
+    ).fetchone()
+    return _row_to_chunk(row) if row is not None else None
 
 
 def retrieve(
@@ -371,10 +487,19 @@ def retrieve(
         result.notes.append(f"intent {intent!r} matched no rule; fell through to the general pool")
         result.intent = None
 
-    general = _fetch_general(conn, pool_vec, table, k=2)
+    general = _fetch_general(conn, state, pool_vec, table, k=2)
     if general:
         best_similarity = 1 - general[0].tags["distance"]
         if best_similarity < GENERAL_MIN_SIMILARITY:
+            fallback = _fetch_lowest_eligible_step(conn, state, table)
+            if fallback is not None:
+                result.governing = RetrievedRule(fallback, "governing", 1.0)
+                result.notes.append(
+                    f"general-pool best match {general[0].id} below relevance threshold "
+                    f"({best_similarity:.3f} < {GENERAL_MIN_SIMILARITY:.3f}); fell back to "
+                    f"lowest-numbered eligible step {fallback.id} rather than closing the call"
+                )
+                return result
             result.notes.append(
                 f"general-pool best match {general[0].id} below relevance threshold "
                 f"({best_similarity:.3f} < {GENERAL_MIN_SIMILARITY:.3f}); no rule retrieved"
@@ -389,6 +514,18 @@ def retrieve(
         elif general[0].exclusive:
             result.notes.append(f"{general[0].id} is exclusive; reference suppressed")
     else:
-        result.notes.append("memory is empty — no rule retrieved")
+        # Every flow rule was excluded by the requires-gate (or the pool has
+        # none at all). A diversion-only campaign genuinely has nothing left
+        # to say here; a flow-based one must not end the call by exhaustion —
+        # see _fetch_lowest_eligible_step's docstring.
+        fallback = _fetch_lowest_eligible_step(conn, state, table)
+        if fallback is not None:
+            result.governing = RetrievedRule(fallback, "governing", 1.0)
+            result.notes.append(
+                f"general pool empty after prerequisite filtering; fell back to "
+                f"lowest-numbered eligible step {fallback.id} rather than closing the call"
+            )
+        else:
+            result.notes.append("memory is empty — no rule retrieved")
 
     return result
