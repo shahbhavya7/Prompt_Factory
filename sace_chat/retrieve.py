@@ -401,6 +401,7 @@ def retrieve(
     history: list | None = None,
     router: IntentRouter | None = None,
     table: str = "chunks",
+    cache_table: str = "answer_cache",
     precedence=None,
     use_cache: bool = True,
 ) -> Retrieval:
@@ -465,6 +466,7 @@ def retrieve(
             hit = answer_cache.lookup(
                 conn, message_vec, intent,
                 pending=answer_cache.pending_fingerprint(state),
+                table=cache_table,
             )
             if hit is not None:
                 result.cache_hit = hit

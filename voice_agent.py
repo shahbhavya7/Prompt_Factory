@@ -796,6 +796,7 @@ def build_engine() -> Engine:
         manager=manager, llm=get_llm(), table=CAMPAIGN.chunks_table,
         never_say_guard=CAMPAIGN.never_say_guard,
         never_say_fallback=CAMPAIGN.never_say_fallback,
+        cache_table=CAMPAIGN.cache_table,
     )
     # Exemplars embedded once here, at startup, so no turn pays for them.
     engine.router.warm()

@@ -418,6 +418,22 @@ def init_db():
                  "ON answer_cache (source)")
         )
 
+        # A second campaign's reply cache — the chunks_renewal pattern
+        # repeated for the exact same reason, and not optional the way the
+        # module docstring in campaign.py used to claim: coverage's kb.py and
+        # renewal's kb_renewal.py both reuse the five safety-label intents
+        # verbatim (dnc, abuse, medical_emergency, garbled_audio,
+        # frustration), so a shared answer_cache lets a reply CACHED from a
+        # coverage call be SERVED to a renewal caller under the same intent
+        # label — wrong clinic name, wrong script, on the highest-stakes
+        # intents in the system. Placed AFTER the answer_cache migrations
+        # above so a fresh answer_cache_renewal always matches its current
+        # shape. INCLUDING ALL brings the intent/rule/pending indexes along
+        # with it under freshly generated names.
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS answer_cache_renewal (LIKE answer_cache INCLUDING ALL)"
+        ))
+
 
 def _has_answer_cache_column(conn, column: str) -> bool:
     return bool(

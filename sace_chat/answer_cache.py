@@ -589,15 +589,15 @@ def lookup(conn, message_vec, intent: str | None, *, pending: str = "",
     }
 
 
-def record_hit(cache_id: str) -> None:
+def record_hit(cache_id: str, table: str = "answer_cache") -> None:
     """Bookkeeping for a served hit. Tolerant by design — a stats update must
     never be able to break a live call."""
     try:
         with SessionLocal() as session:
             session.execute(
                 sql_text(
-                    "UPDATE answer_cache SET hit_count = hit_count + 1, "
-                    "last_hit_at = now() WHERE id = :i"
+                    f"UPDATE {table} SET hit_count = hit_count + 1, "
+                    f"last_hit_at = now() WHERE id = :i"
                 ),
                 {"i": cache_id},
             )
@@ -725,7 +725,7 @@ def invalidate_for_rule(rule_id: str, table: str = "answer_cache") -> int:
         return 0
 
 
-def invalidate_for_intent(intent: str | None) -> int:
+def invalidate_for_intent(intent: str | None, table: str = "answer_cache") -> int:
     """Drop every cached answer in one section.
 
     Called when a rule is approved into that section: the cached replies there
@@ -737,7 +737,7 @@ def invalidate_for_intent(intent: str | None) -> int:
     try:
         with SessionLocal() as session:
             n = session.execute(
-                sql_text(f"DELETE FROM answer_cache WHERE {where}"), params
+                sql_text(f"DELETE FROM {table} WHERE {where}"), params
             ).rowcount
             session.commit()
         return int(n or 0)

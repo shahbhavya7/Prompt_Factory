@@ -41,11 +41,14 @@ class CampaignConfig:
     name: str
     kb_module: str
     chunks_table: str = "chunks"
-    # Not yet wired into the reply cache's own call sites (retrieve.py,
-    # engine.py always address "answer_cache" directly) — see
-    # answer_cache.py's table= parameters, added for this but unused so far.
-    # Safe today only because intent label vocabularies never collide between
-    # campaigns; a real second cache table is follow-up work, not done here.
+    # Wired into every reply-cache call site (retrieve.py's lookup, engine.py's
+    # store/record_hit — see Engine.cache_table). A shared table was briefly
+    # "safe" on the premise that intent vocabularies never collide between
+    # campaigns, but that premise was false: coverage's kb.py and
+    # kb_renewal.py both reuse five safety-label intents verbatim (dnc,
+    # abuse, medical_emergency, garbled_audio, frustration), so a
+    # coverage-learned reply on one of those could be replayed to a renewal
+    # caller under the wrong clinic's script. See db.py's answer_cache_renewal.
     cache_table: str = "answer_cache"
     stable_core: str = field(default="", repr=False)
     placeholders: dict = field(default_factory=dict)
@@ -136,7 +139,7 @@ def _register_renewal() -> None:
         name="renewal",
         kb_module="sace_chat.kb_renewal",
         chunks_table="chunks_renewal",
-        cache_table="answer_cache",
+        cache_table="answer_cache_renewal",
         stable_core=kb_renewal.RENEWAL_STABLE_CORE,
         placeholders={
             # Reuses coverage's own patient-identity/callback keys — the
