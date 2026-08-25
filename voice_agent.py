@@ -65,12 +65,15 @@ def _to_frame(samples: np.ndarray, sample_rate: int, channels: int = 1) -> rtc.A
         num_channels=channels, samples_per_channel=len(pcm) // channels,
     )
 
-from sace_chat import manager
+from sace_chat import campaign, manager
 from sace_chat.db import init_db, record_call_transcript, record_turn
 from sace_chat.embeddings import get_embedder
 from sace_chat.engine import Engine, assert_message_present, question_key
-from sace_chat.kb import RULES, STABLE_CORE
 from sace_chat.retrieve import CallState
+
+CAMPAIGN = campaign.get_campaign()
+RULES = campaign.load_rules(CAMPAIGN)
+STABLE_CORE = CAMPAIGN.stable_core
 
 # ─────────────────────────────── config ───────────────────────────────
 STT_MODEL = os.environ.get("DEEPGRAM_STT_MODEL", "nova-3")
@@ -790,11 +793,11 @@ def build_engine() -> Engine:
     init_db()
     engine = Engine(
         stable_core=STABLE_CORE, rules=RULES, embedder=get_embedder(),
-        manager=manager, llm=get_llm(),
+        manager=manager, llm=get_llm(), table=CAMPAIGN.chunks_table,
     )
     # Exemplars embedded once here, at startup, so no turn pays for them.
     engine.router.warm()
-    print(f"[boot] engine ready · {len(RULES)} seed rules · "
+    print(f"[boot] campaign={CAMPAIGN.name} engine ready · {len(RULES)} seed rules · "
           f"hot-path embedder shares KB model: {engine.router.shares_kb_embedder}")
     return engine
 
