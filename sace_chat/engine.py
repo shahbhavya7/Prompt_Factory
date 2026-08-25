@@ -329,6 +329,30 @@ def cached_decision(user_message: str, retrieval, elapsed_ms: float = 0.0) -> di
     }
 
 
+def _apply_field_defaults(governing, valid: dict, state) -> None:
+    """Deterministically fill in a flow rule's own `sets` defaults for any
+    field the model did not itself extract this turn — see models.Chunk.sets
+    for why this cannot be left to the model's own initiative.
+
+    Never overwrites a field already known from an earlier turn: which rule
+    governs only answers the question the FIRST time it is reached (e.g.
+    already_submitted_check's own default of packet_received=True is only
+    right for the direct "yes it arrived" path — on the address-correction
+    path packet_received is already False from address_capture, and a
+    same-turn default must not clobber that).
+    """
+    if governing is None:
+        return
+    sets = getattr(governing.chunk, "sets", None)
+    if not sets:
+        return
+    known = getattr(state, "collected_fields", None) or {}
+    for field_name, default in sets.items():
+        if field_name in valid["extracted_fields"] or field_name in known:
+            continue
+        valid["extracted_fields"][field_name] = default
+
+
 def question_key(question: str) -> str:
     """Identity of a question for dedup.
 
@@ -344,7 +368,8 @@ def question_key(question: str) -> str:
 
 class Engine:
     def __init__(self, stable_core, rules=None, embedder=None, manager=None, llm=None,
-                 monolith_text=None, table="chunks", chunks=None):
+                 monolith_text=None, table="chunks", chunks=None,
+                 never_say_guard=None, never_say_fallback=""):
         self.stable_core = stable_core
         self.rules = rules if rules is not None else (chunks or [])
         self.embedder = embedder
@@ -353,6 +378,13 @@ class Engine:
         self.monolith_tokens = est_tokens(monolith_text) if monolith_text else MONOLITH_TOKENS
         self.table = table
         self.router = IntentRouter(embedder)
+        # Optional (reply_text, case_record) -> (ok, reason) predicate, run in
+        # prepare_reply only — see that method. None (the default) disables it
+        # entirely, which is what every existing construction site gets: this
+        # is a renewal-campaign-specific compliance concern, not a change to
+        # coverage's shipped behaviour. See sace_chat/guards.py.
+        self._never_say_guard = never_say_guard
+        self._never_say_fallback = never_say_fallback
 
     def _retrieve(self, state, message, history):
         with db_engine.connect() as conn:
@@ -503,6 +535,59 @@ class Engine:
             elif valid["call_should_end"]:
                 notes.append(f"{governing.chunk.id} is not terminal; refused to end the call")
                 valid["call_should_end"] = False
+
+        # The never-say guard: code-enforced, because prose in the prompt is
+        # not how this codebase trusts anything load-bearing to hold (see
+        # guards.check_never_say's docstring). Disabled entirely unless a
+        # guard was passed in at construction — every existing coverage
+        # engine gets None here and this block is a no-op for it.
+        if self._never_say_guard is not None:
+            ok, why = self._never_say_guard(reply_text, state.case_record)
+            if not ok and not regenerated:
+                # Reuses the SAME one-retry budget the grounding check has —
+                # not a second regeneration on top of it. If grounding already
+                # spent it, this falls straight to the deterministic fallback
+                # below instead of a third LLM call.
+                notes.append(f"regenerating before speech (never-say): {why}")
+                prompt = build_turn_prompt(
+                    self.stable_core, state, retrieval, history,
+                    reinforce_reason=(
+                        f"Your reply violated a hard safety rule: {why}. Never state a "
+                        f"dollar amount, income limit, eligibility determination or "
+                        f"deadline unless it is copied verbatim from the case record "
+                        f"shown to you. Rewrite the reply without it."
+                    ),
+                )
+                valid, raw = self._decide(prompt, user_message, state, notes, sent_log)
+                reply_text = valid["reply"]
+                regenerated = True
+                ok, why = self._never_say_guard(reply_text, state.case_record)
+            if not ok:
+                notes.append(f"never-say violation survived the regeneration budget; "
+                             f"forced a safe fallback instead of speaking it: {why}")
+                if governing is not None and governing.chunk.transfer:
+                    from sace_chat.assemble import _substitute_placeholders
+
+                    reply_text = _substitute_placeholders(governing.chunk.text)
+                else:
+                    reply_text = self._never_say_fallback
+                if governing is not None and governing.chunk.terminal:
+                    reply_text, _ = strip_after_terminal(reply_text)
+                valid["reply"] = reply_text
+                # A forced fallback is not the scored reply any more — scores
+                # and outcome above describe text that is no longer what gets
+                # spoken. Relabelled so _maybe_cache's is_cacheable check
+                # (outcome != "grounded" -> refuse) never stores it: whatever
+                # this fallback is, it is a safety escape hatch, not a
+                # confirmed-good answer worth replaying to the next caller.
+                outcome = "never-say-fallback"
+
+        # prepare_reply does not mutate state itself (see the voice-path note
+        # below), but the voice path applies extracted_fields from THIS dict
+        # once the audio finishes — see voice_agent.py's finish_turn — so the
+        # same deterministic defaults have to land here too, not only in
+        # step()'s own chat-path copy of this logic.
+        _apply_field_defaults(governing, valid, state)
 
         question = _extract_question(reply_text)
         if question:
@@ -794,6 +879,7 @@ class Engine:
         state.intent = retrieval.intent or "none"
         state.opt_out = state.opt_out or retrieval.opt_out
         state.ended = state.ended or valid["call_should_end"]
+        _apply_field_defaults(governing, valid, state)
         state.collected_fields.update(valid["extracted_fields"])
 
         question = _extract_question(reply_text)
