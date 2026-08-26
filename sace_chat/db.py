@@ -86,6 +86,7 @@ class ChunkRow(Base):
     # numbered eligible step" fallback) — never as a ranking signal otherwise.
     # NULL for anything that isn't a flow rule.
     step_order = Column(Integer, nullable=True)
+    case_fields = Column(JSONB, nullable=False, default=list)
 
 
 class TurnRow(Base):
@@ -300,6 +301,7 @@ def init_db():
             "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS requires JSONB NOT NULL DEFAULT '{}'::jsonb",
             "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS sets JSONB NOT NULL DEFAULT '{}'::jsonb",
             "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS step_order INTEGER",
+            "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS case_fields JSONB NOT NULL DEFAULT '[]'::jsonb",
         ):
             conn.execute(text(ddl))
 
@@ -348,6 +350,14 @@ def init_db():
         # CREATE INDEX needed here.
         conn.execute(text(
             "CREATE TABLE IF NOT EXISTS chunks_renewal (LIKE chunks INCLUDING ALL)"
+        ))
+        # LIKE ... INCLUDING ALL only runs at CREATE time — an
+        # already-existing chunks_renewal (every deploy after the first)
+        # does not retroactively pick up a column added to chunks later, so
+        # every chunks migration above needs its own explicit mirror here.
+        conn.execute(text(
+            "ALTER TABLE chunks_renewal ADD COLUMN IF NOT EXISTS "
+            "case_fields JSONB NOT NULL DEFAULT '[]'::jsonb"
         ))
 
         # needs_review grew from "a log of rejections" into the human approval
@@ -559,6 +569,7 @@ def insert_chunk(session, chunk, embedder, learned_kind=None, source=None, table
             requires=dict(chunk.requires),
             sets=dict(chunk.sets),
             step_order=chunk.step_order,
+            case_fields=list(chunk.case_fields),
         )
         session.merge(row)
         return row
@@ -567,10 +578,12 @@ def insert_chunk(session, chunk, embedder, learned_kind=None, source=None, table
         text(
             f"INSERT INTO {table} "
             f"(id, title, text, cue, intent, priority, terminal, exclusive, "
-            f" source, learned_kind, tier, transfer, requires, sets, step_order, embedding) "
+            f" source, learned_kind, tier, transfer, requires, sets, step_order, "
+            f" case_fields, embedding) "
             f"VALUES (:id, :title, :ctext, :cue, :intent, :priority, :terminal, :exclusive, "
             f" :source, :learned_kind, :tier, :transfer, CAST(:requires AS jsonb), "
-            f" CAST(:sets AS jsonb), :step_order, CAST(:vec AS vector)) "
+            f" CAST(:sets AS jsonb), :step_order, CAST(:case_fields AS jsonb), "
+            f" CAST(:vec AS vector)) "
             f"ON CONFLICT (id) DO UPDATE SET "
             f"  title=EXCLUDED.title, text=EXCLUDED.text, cue=EXCLUDED.cue, "
             f"  intent=EXCLUDED.intent, priority=EXCLUDED.priority, "
@@ -578,7 +591,8 @@ def insert_chunk(session, chunk, embedder, learned_kind=None, source=None, table
             f"  source=EXCLUDED.source, learned_kind=EXCLUDED.learned_kind, "
             f"  tier=EXCLUDED.tier, transfer=EXCLUDED.transfer, "
             f"  requires=EXCLUDED.requires, sets=EXCLUDED.sets, "
-            f"  step_order=EXCLUDED.step_order, embedding=EXCLUDED.embedding"
+            f"  step_order=EXCLUDED.step_order, case_fields=EXCLUDED.case_fields, "
+            f"  embedding=EXCLUDED.embedding"
         ),
         {
             "id": chunk.id, "title": chunk.title, "ctext": chunk.text, "cue": cue,
@@ -589,6 +603,7 @@ def insert_chunk(session, chunk, embedder, learned_kind=None, source=None, table
             "requires": json.dumps(dict(chunk.requires)),
             "sets": json.dumps(dict(chunk.sets)),
             "step_order": chunk.step_order, "vec": str(list(vec)),
+            "case_fields": json.dumps(list(chunk.case_fields)),
         },
     )
     return chunk

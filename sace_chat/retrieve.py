@@ -71,7 +71,7 @@ GENERAL_MIN_SIMILARITY = 0.30
 
 _SELECT_COLS = (
     "id, title, text, intent, priority, terminal, exclusive, source, learned_kind, "
-    "tier, transfer, requires, sets, step_order"
+    "tier, transfer, requires, sets, step_order, case_fields"
 )
 
 # Priority ranks strictly ABOVE distance — but only inside an intent's own rule
@@ -127,6 +127,51 @@ class CallState:
     # T2-tier rule, as the source of the value the rule's own text says to
     # read. Empty for a campaign with no case-record concept — coverage.
     case_record: dict = dc_field(default_factory=dict)
+
+    # ── Renewal-only fields (coverage's shape above is untouched; these sit
+    # at their defaults for every coverage call and are never referenced by
+    # coverage's own code path) — see sace_chat/disposition.py for the
+    # enforcement code that owns consent_recorded and disposition.
+    #
+    # packet_received/already_submitted/willingness/available_now/
+    # has_camera_phone/helper_at_home/consent_prebriefed mirror the SAME
+    # keys already tracked in collected_fields (set by the flow rules'
+    # `sets`/_apply_field_defaults machinery — see engine.py) — kept here too
+    # as typed attributes, synced by engine._sync_renewal_state each turn,
+    # so this module's and other code's callers get real attribute access
+    # instead of a bare dict lookup. collected_fields, NOT these mirrors,
+    # remains the source of truth the SQL prerequisite gate reads.
+    packet_received: bool | None = None
+    address_confirmed: bool | None = None
+    already_submitted: bool | None = None
+    willingness: str = "undecided"  # help | self_file | undecided
+    available_now: bool | None = None
+    has_camera_phone: bool | None = None
+    helper_at_home: bool | None = None
+    consent_prebriefed: bool = False
+
+    # address_updated_by_human / consent_recorded are NEVER synced from
+    # collected_fields and carry no `sets` entry on any flow rule — Maya's
+    # own turn loop has no code path that writes either one. Both are set
+    # exclusively by sace_chat/disposition.py, called only from the human
+    # counsellor's own code path after the human confirms the thing
+    # actually happened.
+    address_updated_by_human: bool = False
+    consent_recorded: bool = False
+
+    upload_link_sent: bool = False
+    # OPEN | SELF_FILING | SUBMITTED | VERIFIED_RETAINED_D90 | CLOSED_SUCCESS
+    # — see disposition.py's state machine. Never set directly; only
+    # disposition.py's functions may transition it.
+    disposition: str = "OPEN"
+    expected_file_date: str | None = None
+
+    # Every intent-routed (diversion) rule that has governed a reply this
+    # call, in order — the "every KB answer already given with its rule id"
+    # half of warm_transfer's hand-off packet (sace_chat/transfer.py). A
+    # flow rule (intent=None) never appends here; only a real digression or
+    # a T4 short-circuit does. Populated by engine._sync_renewal_state.
+    kb_answers_given: list = dc_field(default_factory=list)
 
 
 @dataclass
@@ -184,6 +229,7 @@ def _row_to_chunk(row) -> Chunk:
         requires=row.requires if row.requires is not None else {},
         sets=row.sets if row.sets is not None else {},
         step_order=row.step_order,
+        case_fields=row.case_fields if row.case_fields is not None else [],
     )
 
 

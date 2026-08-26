@@ -219,6 +219,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.1–2', 'design_note': 'Leads with reassurance that it is pre-filled. That single fact reduces refusal more than anything else.', 'caller_phrasings': ["What's this paper?", 'I got something in the mail', 'What is this about?']},
     ),
     Chunk(
@@ -232,6 +233,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.1', 'design_note': "The form itself says 'You may lose your Medi-Cal if you do not respond by' the due date. Do not soften it and do not dramatise it.", 'caller_phrasings': ['Can I ignore it?', "What if I don't send it?"]},
     ),
     Chunk(
@@ -245,6 +247,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.1', 'design_note': 'Stated verbatim on the form. One household can be renewing on more than one form, and on different form types.', 'caller_phrasings': ["My husband isn't on here", 'Where are my kids?']},
     ),
     Chunk(
@@ -258,6 +261,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.2', 'design_note': 'Do not treat this as a dead end — it is the highest-value correction available. Route to counsellor for the county address update.', 'caller_phrasings': ['Nothing came in the mail', "I didn't get anything"]},
     ),
     Chunk(
@@ -271,6 +275,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.2', 'design_note': 'Do not treat this as a dead end — it is the highest-value correction available. Route to counsellor for the county address update.', 'caller_phrasings': ['I kept it safe but seems to have lost it']},
     ),
     Chunk(
@@ -284,6 +289,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.16', 'design_note': "Never close on self-reported submission. The form's own privacy section says the county will contact them if something required is missing.", 'caller_phrasings': ['I mailed it last week', 'My daughter did it online']},
     ),
     Chunk(
@@ -297,6 +303,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.1', 'design_note': "Form states it is available in another language or accessible format. Substitute the patient's actual language.", 'caller_phrasings': ["I can't read this", "It's in English"]},
     ),
     Chunk(
@@ -310,6 +317,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.2', 'design_note': 'The confirm-or-correct model, said plainly. This is the answer that most shortens the perceived task.', 'caller_phrasings': ['Do I answer everything again?', "It's already filled in"]},
     ),
     Chunk(
@@ -323,6 +331,7 @@ RULES = [
         exclusive=False,
         tier='T2',
         transfer=False,
+        case_fields=['worker_name', 'county_phone'],
         tags={'citation': 'MC 216 p.1', 'design_note': 'Pre-populated on the form. If Mvue does not hold it, Maya says she will find out.', 'caller_phrasings': ['Who is handling my case?'], 'case_fields': ['worker_name', 'county_phone']},
     ),
     Chunk(
@@ -336,6 +345,7 @@ RULES = [
         exclusive=False,
         tier='T2',
         transfer=False,
+        case_fields=['due_date'],
         tags={'citation': 'MC 216 p.1', 'design_note': 'THE canonical T2 field. Never inferred from the notice date, never estimated, never rounded.', 'caller_phrasings': ['How long do I have?', "What's the last day?"], 'case_fields': ['due_date']},
     ),
     Chunk(
@@ -349,6 +359,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Deliberately non-committal. The cure-period rules are real but the specifics are UNVERIFIED and case-dependent. Do not name a number of days.', 'caller_phrasings': ['I missed the date', 'Is it too late?']},
     ),
     Chunk(
@@ -362,6 +373,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': 'UNVERIFIED', 'design_note': 'Cure-period length must be confirmed with DHCS or the county before any spoken figure is approved.', 'caller_phrasings': ['Can I still get it back?', 'How many months do I have?']},
     ),
     Chunk(
@@ -375,6 +387,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'SAWS 2 PLUS cover', 'design_note': '45 days is stated for Medi-Cal and cash aid; 30 days is CalFresh. Do not mix them up.', 'caller_phrasings': ['When will I hear back?', 'How fast is it?']},
     ),
     Chunk(
@@ -388,6 +401,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.15', 'design_note': 'Ten days for Medi-Cal. Thirty days if they are insured through Covered California — a separate clock.', 'caller_phrasings': ['If something changes do I have to tell you?']},
     ),
     Chunk(
@@ -401,6 +415,7 @@ RULES = [
         exclusive=False,
         tier='T2',
         transfer=False,
+        case_fields=['outstanding_county_request'],
         tags={'citation': 'MC 216 p.16', 'design_note': 'Guessing here makes the patient send the wrong document and restarts the clock.', 'caller_phrasings': ['I got another letter', 'They want more papers'], 'case_fields': ['outstanding_county_request']},
     ),
     Chunk(
@@ -414,6 +429,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'SAWS 2 PLUS Q22c', 'design_note': 'Retroactive coverage. Real revenue for the clinic and rarely raised by patients unprompted.', 'caller_phrasings': ['I have a bill from two months ago']},
     ),
     Chunk(
@@ -427,6 +443,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.2', 'design_note': 'Maya cannot update the county record. Explain, then route. Do not imply she has done it.', 'caller_phrasings': ['I have a new address', "I don't live there anymore"]},
     ),
     Chunk(
@@ -440,6 +457,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.2; SAWS 2 PLUS Q1', 'design_note': 'Both forms provide for a separate mailing address, and SAWS 2 PLUS explicitly asks the county to help construct a usable one.', 'caller_phrasings': ["I'm staying with people", "I'm not housed right now"]},
     ),
     Chunk(
@@ -453,6 +471,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.2', 'design_note': 'Form has four slots: home, cell, work, other.', 'caller_phrasings': ['I have two phones', 'Should I put my work number?']},
     ),
     Chunk(
@@ -466,6 +485,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.2', 'design_note': 'Marked optional on the form. Do not push for it, and never gate document collection on it.', 'caller_phrasings': ["I don't have email", 'Do you need my email?']},
     ),
     Chunk(
@@ -479,6 +499,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.2', 'design_note': 'Two separate fields. A patient may read one language and prefer to speak another.', 'caller_phrasings': ['Can you send it in Spanish?', 'I read better in Chinese']},
     ),
     Chunk(
@@ -492,6 +513,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.2', 'design_note': 'Answers the pre-population question and the trust question at once. Always name the member centre, never Mvue.', 'caller_phrasings': ['Where did you get this?', 'Who gave you my details?']},
     ),
     Chunk(
@@ -505,6 +527,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.2', 'design_note': "'Best way to contact you' is a stated preference on the form. Honour it in the contact policy, not just the answer.", 'caller_phrasings': ['Stop calling, just mail it', "I'd rather text"]},
     ),
     Chunk(
@@ -518,6 +541,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.1, p.18', 'design_note': 'Form commits to accessible formats and qualified sign language interpreters at no cost.', 'caller_phrasings': ["I can't hear well on the phone", 'I need big print']},
     ),
     Chunk(
@@ -531,6 +555,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': 'UNVERIFIED', 'design_note': 'Depends on member centre policy and county acceptance. Confirm per site before Maya ever offers it.', 'caller_phrasings': ['Can you get my mail?', 'Can it come to the clinic?']},
     ),
     Chunk(
@@ -544,6 +569,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.1; SAWS 2 PLUS cover', 'design_note': 'Both forms commit to free help and free interpretation.', 'caller_phrasings': ["I don't understand it", 'Can you do it for me?']},
     ),
     Chunk(
@@ -557,6 +583,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.2', 'design_note': 'Authorized representative. Note the form says to phone the county to appoint one; there is no field on the renewal.', 'caller_phrasings': ['Can my daughter handle it?', 'I want my son to talk to them']},
     ),
     Chunk(
@@ -570,6 +597,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.15', 'design_note': 'Never claim this without the consent step. The signature line covers the beneficiary or an authorized representative.', 'caller_phrasings': ['Can you just do it?', 'Will you send it in?']},
     ),
     Chunk(
@@ -583,6 +611,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': 'MC 216 p.2', 'design_note': 'Form directs this to a phone call with the county office. Cancellation may need MC 381.', 'caller_phrasings': ["I don't want my ex handling it anymore"]},
     ),
     Chunk(
@@ -596,6 +625,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.1', 'design_note': 'Form lists in person as a submission method. Book a real appointment, do not just name a location.', 'caller_phrasings': ["I'd rather come in", "I don't want to do this on the phone"]},
     ),
     Chunk(
@@ -609,6 +639,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'SAWS 2 PLUS cover', 'design_note': 'Say the never-asks-for-payment line early and unprompted on every call.', 'caller_phrasings': ['How much do you charge?', 'Do I have to pay you?']},
     ),
     Chunk(
@@ -622,6 +653,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.3', 'design_note': 'Four clauses, said as one breath. Do not read the fifth dependent clause unless asked.', 'caller_phrasings': ['Who counts as my household?']},
     ),
     Chunk(
@@ -635,6 +667,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.3', 'design_note': 'Stated with those exact examples on the form. High-frequency question.', 'caller_phrasings': ['My girlfriend lives here', 'What about the guy renting a room?']},
     ),
     Chunk(
@@ -648,6 +681,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.3', 'design_note': 'Answerable but genuinely confusing. Offer the handoff in the same breath rather than after a wrong turn.', 'caller_phrasings': ['My mum claims me on her taxes']},
     ),
     Chunk(
@@ -661,6 +695,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.4', 'design_note': "The 'what changed' block is free text on the form. Capture to a controlled vocabulary internally.", 'caller_phrasings': ['My daughter went to college', 'Someone left the house']},
     ),
     Chunk(
@@ -674,6 +709,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.4, p.12', 'design_note': "Newborn addition. Also note the add-to-Medi-Cal block asks for SSN 'if they have one' — never insist.", 'caller_phrasings': ["There's a new baby", 'I gave birth']},
     ),
     Chunk(
@@ -687,6 +723,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'SAWS 2 PLUS Q6a', 'design_note': 'The application has per-member contact blocks precisely for this.', 'caller_phrasings': ['My husband works out of town']},
     ),
     Chunk(
@@ -700,6 +737,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.12', 'design_note': "Growth opportunity for the clinic's panel as well as the right answer.", 'caller_phrasings': ['Can my wife get on it?', 'My mother needs coverage']},
     ),
     Chunk(
@@ -713,6 +751,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': 'MC 216 p.13', 'design_note': 'The county pre-flags deceased status and asks the beneficiary to confirm. Never have a voice agent confirm a death.', 'caller_phrasings': ['My husband passed away']},
     ),
     Chunk(
@@ -726,6 +765,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': 'MC 216 p.13', 'design_note': 'County pre-flags this and asks for a release date if the flag is wrong. Sensitive and eligibility-relevant.', 'caller_phrasings': ['My son is locked up', "He's incarcerated"]},
     ),
     Chunk(
@@ -739,6 +779,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'SAWS 2 PLUS Program Rules p.2', 'design_note': "The form states plainly that a family can get benefits for eligible members even if others aren't eligible. Stop there — do not extend it toward immigration.", 'caller_phrasings': ['Only my children have it']},
     ),
     Chunk(
@@ -752,6 +793,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.3, p.5', 'design_note': 'Stated explicitly on the form. One of the highest-value answers in the whole KB — it removes a common self-disqualification.', 'caller_phrasings': ['I never do taxes', "I don't work enough to file"]},
     ),
     Chunk(
@@ -765,6 +807,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.5', 'design_note': 'Form defines it in those terms.', 'caller_phrasings': ['What does primary filer mean?']},
     ),
     Chunk(
@@ -778,6 +821,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.5', 'design_note': 'Borderline. Give the plain definition, then offer the handoff. Do not help them choose a status.', 'caller_phrasings': ['Which box do I tick?']},
     ),
     Chunk(
@@ -791,6 +835,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.5, p.16', 'design_note': 'Privacy statement supports the second sentence.', 'caller_phrasings': ["What's tax got to do with my health?"]},
     ),
     Chunk(
@@ -804,6 +849,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': 'MC 216 p.5', 'design_note': 'A changed primary filer reshapes the whole determination. Not a Maya answer.', 'caller_phrasings': ['I got married', "I'm filing separately now"]},
     ),
     Chunk(
@@ -817,6 +863,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'SAWS 2 PLUS Q23f', 'design_note': 'Appears on the application, not the renewal. Saying yes is what makes automatic renewal possible — worth explaining well.', 'caller_phrasings': ['It says something about renewing for five years']},
     ),
     Chunk(
@@ -830,6 +877,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.17', 'design_note': 'Rights section ties repayment to premium assistance and state subsidy. Keep the distinction crisp.', 'caller_phrasings': ['Will I owe anything?', 'Do I have to pay it back?']},
     ),
     Chunk(
@@ -843,6 +891,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.6', 'design_note': 'The single most common patient error, and a direct cause of income mismatches. Worth saying unprompted.', 'caller_phrasings': ['Is that my take-home?', 'Before deductions?']},
     ),
     Chunk(
@@ -856,6 +905,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.6', 'design_note': "Twenty-six pay periods versus twenty-four. Collapsing them misstates annual income by nearly a month's pay.", 'caller_phrasings': ["I'm paid biweekly", 'Twice a month?']},
     ),
     Chunk(
@@ -869,6 +919,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.7', 'design_note': 'The annualisation field. For seasonal and agricultural work this is the fix for a mismatch, not more paystubs.', 'caller_phrasings': ['Some weeks I get nothing', "It's different every month"]},
     ),
     Chunk(
@@ -882,6 +933,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.6, p.8', 'design_note': "Form names 'last year's tax return' as acceptable income proof and 'profit and loss statement' as deduction proof. Cornerstone answer for this population.", 'caller_phrasings': ['I get paid in cash', 'Nobody gives me a stub', 'Day labour']},
     ),
     Chunk(
@@ -895,6 +947,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.6–7', 'design_note': 'Give the four common categories, not the thirty-item list. If they press on a specific type, that is T3.', 'caller_phrasings': ['Do I have to put everything?']},
     ),
     Chunk(
@@ -908,6 +961,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Income countability is an eligibility determination. Hard T3 no matter how simple the question sounds.', 'caller_phrasings': ['Does food stamps count as income?', 'What about my disability cheque?']},
     ),
     Chunk(
@@ -921,6 +975,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.6', 'design_note': "The 'date of the last time you got this income' field. Second sentence is directional, not a determination — keep it that vague.", 'caller_phrasings': ['I got laid off', 'My hours got cut']},
     ),
     Chunk(
@@ -934,6 +989,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'SAWS 2 PLUS Q8', 'design_note': 'Tips are listed as earned income on the application.', 'caller_phrasings': ['What about cash tips?']},
     ),
     Chunk(
@@ -947,6 +1003,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'SAWS 2 PLUS Q7, Q9', 'design_note': "Both 'help with rent/food/clothing' and in-kind housing appear on the form. Report it, do not judge it.", 'caller_phrasings': ['My son helps me with rent', 'Someone gives me money']},
     ),
     Chunk(
@@ -960,6 +1017,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.6', 'design_note': 'Three named acceptable proofs, verbatim from the form. Note that a tax return is often easier than stubs for this ICP.', 'caller_phrasings': ['What papers do you want?']},
     ),
     Chunk(
@@ -973,6 +1031,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.6–7', 'design_note': 'The correction mechanic. This is the confirm-or-correct model in action.', 'caller_phrasings': ["That's not what I make", 'That number is old']},
     ),
     Chunk(
@@ -986,6 +1045,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': "Never answered. Never softened into 'you're probably fine'. This is the definitional eligibility determination.", 'caller_phrasings': ['Am I over the limit?', 'Will I still qualify?']},
     ),
     Chunk(
@@ -999,6 +1059,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': 'MC 216 p.6', 'design_note': 'The reasonable-compatibility failure. Route to CEC with the income script and the attestation option.', 'caller_phrasings': ['They say the numbers are different', 'They want proof of income again']},
     ),
     Chunk(
@@ -1012,6 +1073,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'SAWS 2 PLUS Opting Out para', 'design_note': 'Form states the county needs income and resource information for non-applying members. Report, then hand off the effect.', 'caller_phrasings': ["He's not on Medi-Cal", 'Does his money count?']},
     ),
     Chunk(
@@ -1025,6 +1087,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.8', 'design_note': "Form states reporting deductions 'may lower the income Medi-Cal uses'. Frame as beneficial, because patients skip it.", 'caller_phrasings': ["What's the point of this section?"]},
     ),
     Chunk(
@@ -1038,6 +1101,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.8', 'design_note': 'Four named examples from the form.', 'caller_phrasings': ['Like what?']},
     ),
     Chunk(
@@ -1051,6 +1115,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.8', 'design_note': 'Both named on the form. The P&L route is the self-employment ledger path.', 'caller_phrasings': ['How do I show it?']},
     ),
     Chunk(
@@ -1064,6 +1129,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': 'SAWS 2 PLUS Q8a', 'design_note': 'The 40% flat rate is CalFresh and cash aid only. Maya must never offer it for a Medi-Cal-only case.', 'caller_phrasings': ['Can I take off my gas and tools?']},
     ),
     Chunk(
@@ -1077,6 +1143,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.8', 'design_note': '', 'caller_phrasings': ['Can I skip it?']},
     ),
     Chunk(
@@ -1090,6 +1157,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.11', 'design_note': 'Report-and-route. Do not assess interaction between plans.', 'caller_phrasings': ['I have work insurance', 'Can I have both?']},
     ),
     Chunk(
@@ -1103,6 +1171,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.11', 'design_note': 'Four types named on the form.', 'caller_phrasings': ["It's only dental", 'What about vision?']},
     ),
     Chunk(
@@ -1116,6 +1185,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.9', 'design_note': 'Form collects Part A–D premiums, which is why both coexist.', 'caller_phrasings': ["I'm on Medicare already"]},
     ),
     Chunk(
@@ -1129,6 +1199,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.9', 'design_note': 'The form itself gives this number. Only speak a phone number if the patient confirms they can write it down.', 'caller_phrasings': ["What's Part B?", "I don't know my plan"]},
     ),
     Chunk(
@@ -1142,6 +1213,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'SAWS 2 PLUS Q22b', 'design_note': 'Loss-of-coverage trigger.', 'caller_phrasings': ["I'm losing my work plan"]},
     ),
     Chunk(
@@ -1155,6 +1227,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Coverage advice. Firmly out of scope.', 'caller_phrasings': ['Is it better to just use Medi-Cal?']},
     ),
     Chunk(
@@ -1168,6 +1241,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': 'MC 216 p.10', 'design_note': 'Long-term care and spousal impoverishment. Always CEC.', 'caller_phrasings': ['My mother is in long-term care']},
     ),
     Chunk(
@@ -1181,6 +1255,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.12', 'design_note': 'Form asks for due date and number of babies expected. Also a WIC referral route.', 'caller_phrasings': ["I'm expecting", "I'm having a baby"]},
     ),
     Chunk(
@@ -1194,6 +1269,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.12', 'design_note': "Former foster youth category. 'Any state' is on the form and is often assumed to be California only.", 'caller_phrasings': ['I aged out of foster care']},
     ),
     Chunk(
@@ -1207,6 +1283,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.13', 'design_note': 'Narrow 19–20 full-time-student band.', 'caller_phrasings': ["He's not a kid anymore", "She's twenty now"]},
     ),
     Chunk(
@@ -1220,6 +1297,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.12', 'design_note': 'Physical, mental, emotional, or developmental. The injury sub-question feeds third-party liability.', 'caller_phrasings': ['My son is autistic', "I'm disabled"]},
     ),
     Chunk(
@@ -1233,6 +1311,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.14', 'design_note': 'IHSS / Personal Care Services referral question. Optional section, zero eligibility risk.', 'caller_phrasings': ['Who helps me at home?', 'I need someone to help me bathe']},
     ),
     Chunk(
@@ -1246,6 +1325,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.14; SAWS 2 PLUS Q38', 'design_note': 'CHDP. Good clinic value and no eligibility consequence.', 'caller_phrasings': ['Do my children get a dentist?']},
     ),
     Chunk(
@@ -1259,6 +1339,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.14; SAWS 2 PLUS cover', 'design_note': 'WIC and CalFresh. Never imply Maya has applied for either.', 'caller_phrasings': ['Do you do food stamps?', 'I need groceries']},
     ),
     Chunk(
@@ -1272,6 +1353,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': 'MC 216 p.14', 'design_note': 'Organ transplant within two years and dialysis are both asked. Clinically loaded — hand off.', 'caller_phrasings': ["I'm on dialysis three times a week"]},
     ),
     Chunk(
@@ -1285,6 +1367,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.15', 'design_note': 'Signature under penalty of perjury is a federal and state requirement.', 'caller_phrasings': ['Does it need my signature?']},
     ),
     Chunk(
@@ -1298,6 +1381,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.15', 'design_note': 'Do not read the four-years-in-jail line unless the patient asks directly. It is on the form and must be read before a telephonic signature.', 'caller_phrasings': ['What am I signing?', 'That sounds serious']},
     ),
     Chunk(
@@ -1311,6 +1395,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.15', 'design_note': "The 'reasonable attempt' clause is genuinely reassuring and is what makes assisted completion coherent.", 'caller_phrasings': ["What if I don't know an answer?"]},
     ),
     Chunk(
@@ -1324,6 +1409,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.15', 'design_note': "The explicit statutory hook for the AR model. Do not extend it into 'so I can sign for you' without the consent step.", 'caller_phrasings': ['Can my daughter sign it?', "I can't write"]},
     ),
     Chunk(
@@ -1337,6 +1423,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'DHCS MEDIL I 18-13', 'design_note': 'Telephonic signature with a recorded sworn statement. Legal wording must be counsel-approved before this answer ships.', 'caller_phrasings': ['Do I have to mail it?', 'Can we do this now?']},
     ),
     Chunk(
@@ -1350,6 +1437,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Recording notice belongs at the top of every call, not as an answer. If Maya is answering this, the opener failed.', 'caller_phrasings': ['Is this being recorded?']},
     ),
     Chunk(
@@ -1363,6 +1451,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': 'MC 216 p.15', 'design_note': 'The AR grant is broad. A patient asking this deserves a human, not a summary.', 'caller_phrasings': ['What does that permission mean?']},
     ),
     Chunk(
@@ -1376,6 +1465,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.2; SAWS 2 PLUS App C', 'design_note': 'Free-choice disclosure. Must be true in the flow, not only in the script.', 'caller_phrasings': ['Can I take it back?', "What if I don't want this?"]},
     ),
     Chunk(
@@ -1389,6 +1479,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.1', 'design_note': 'All four listed on the form. Lead with whichever matches their demonstrated capability, not with online.', 'caller_phrasings': ['Where does it go?', 'Do I mail it?']},
     ),
     Chunk(
@@ -1402,6 +1493,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.1', 'design_note': 'Never make the digital route sound like the default.', 'caller_phrasings': ["I don't do internet", 'I only have a phone']},
     ),
     Chunk(
@@ -1415,6 +1507,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.15–16', 'design_note': 'Privacy section says the county will contact them for anything missing.', 'caller_phrasings': ['Do I need to attach proof?']},
     ),
     Chunk(
@@ -1428,6 +1521,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'SAWS 2 PLUS cover, Q4', 'design_note': 'Interview requirement is stated for CalFresh and cash aid. MC 216 does not require one.', 'caller_phrasings': ['Will someone call me?', 'Do I need to go in?']},
     ),
     Chunk(
@@ -1441,6 +1535,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.16', 'design_note': 'Notice of Action or Request for Information. Set the expectation of a possible second ask.', 'caller_phrasings': ['Then what?', 'How will I know?']},
     ),
     Chunk(
@@ -1454,6 +1549,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'SAWS 2 PLUS Program Rules p.4', 'design_note': 'Form says never throw the BIC away and the same card is reused.', 'caller_phrasings': ['Do I need a new card?', "Where's my BIC?"]},
     ),
     Chunk(
@@ -1467,6 +1563,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'SAWS 2 PLUS Program Rules p.4', 'design_note': 'Verify the current replacement route per county before promising a channel.', 'caller_phrasings': ['I lost my card']},
     ),
     Chunk(
@@ -1480,6 +1577,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.18', 'design_note': 'Ninety days to file, stated on the form, along with free legal aid referral. Do not advise on the merits.', 'caller_phrasings': ['What if I get denied?']},
     ),
     Chunk(
@@ -1493,6 +1591,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.18; SAWS 2 PLUS Program Rules p.1', 'design_note': 'Referral only. Maya never characterises the case.', 'caller_phrasings': ['Is there a lawyer?', 'Who can fight this for me?']},
     ),
     Chunk(
@@ -1506,6 +1605,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'AI disclosure, clinic name, purpose. Belongs in the opener. Exact statutory wording is UNVERIFIED pending counsel.', 'caller_phrasings': ['Who am I speaking to?', 'Where are you calling from?']},
     ),
     Chunk(
@@ -1519,6 +1619,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Answer plainly and immediately offer the human. Never deflect or joke.', 'caller_phrasings': ['Am I talking to a computer?', 'Are you real?']},
     ),
     Chunk(
@@ -1532,6 +1633,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Actively invite verification. This is the single best trust move available and it costs one call.', 'caller_phrasings': ["I don't trust this", 'People try to trick me']},
     ),
     Chunk(
@@ -1545,6 +1647,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Ground it in the care relationship.', 'caller_phrasings': ['Who gave you my details?']},
     ),
     Chunk(
@@ -1558,6 +1661,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Say unprompted early in every call. It is the clearest scam differentiator available.', 'caller_phrasings': ['Is this going to cost me?', 'Do you want my card number?']},
     ),
     Chunk(
@@ -1571,6 +1675,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Accuracy matters here. Claiming government authority would be both false and frightening.', 'caller_phrasings': ['Are you from the county?', 'Are you the state?']},
     ),
     Chunk(
@@ -1584,6 +1689,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': 'MC 216 p.16', 'design_note': 'Two sentences only. Do NOT extend this answer toward immigration — that is KB-IMM-02 and it is a hard stop.', 'caller_phrasings': ['Is this private?', 'Who do you tell?']},
     ),
     Chunk(
@@ -1597,6 +1703,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Maya never requests or confirms an SSN. Not even partially. Not even the last four.', 'caller_phrasings': ["Don't ask me for my social"]},
     ),
     Chunk(
@@ -1610,6 +1717,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': '—', 'design_note': "Honour immediately. No retention attempt, no persuasion, no 'before you go'. Persists network-wide and across cycles.", 'caller_phrasings': ['Take me off your list', "Don't call again"]},
     ),
     Chunk(
@@ -1623,6 +1731,7 @@ RULES = [
         exclusive=False,
         tier='T1',
         transfer=False,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Inbound is a primary channel for this population, not a courtesy.', 'caller_phrasings': ["I'm busy right now", 'Call me later']},
     ),
     Chunk(
@@ -1636,6 +1745,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Potential fraud against the patient. Immediate human, and log it — a pattern here is a security event.', 'caller_phrasings': ['I think I got scammed', 'I gave someone my details']},
     ),
     Chunk(
@@ -1649,6 +1759,7 @@ RULES = [
         exclusive=False,
         tier='T4',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': "HARD STOP. No reassurance, no partial answer, no 'generally speaking'. A wrong answer here can stop a family seeking care for years.", 'caller_phrasings': ['Public charge', 'Will it hurt my case?', 'Will it stop my papers?']},
     ),
     Chunk(
@@ -1662,6 +1773,7 @@ RULES = [
         exclusive=False,
         tier='T4',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'HARD STOP even though the forms do contain relevant statements. Maya must not paraphrase them, because near-misses are what cause harm.', 'caller_phrasings': ['Does ICE see this?', 'Will they find out?']},
     ),
     Chunk(
@@ -1675,6 +1787,7 @@ RULES = [
         exclusive=False,
         tier='T4',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'HARD STOP. Do not confirm or deny eligibility, and do not record the disclosure in any field Maya controls.', 'caller_phrasings': ["I'm undocumented", "I don't have status"]},
     ),
     Chunk(
@@ -1688,6 +1801,7 @@ RULES = [
         exclusive=False,
         tier='T4',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'HARD STOP. Mixed-status household. Even the sympathetic version of this answer is out of bounds for a voice agent.', 'caller_phrasings': ['Only my children have status']},
     ),
     Chunk(
@@ -1701,6 +1815,7 @@ RULES = [
         exclusive=False,
         tier='T4',
         transfer=True,
+        case_fields=[],
         tags={'citation': 'MC 216 p.12', 'design_note': 'HARD STOP despite a field existing. Naming the field is the most Maya may do.', 'caller_phrasings': ['I got my green card', 'I have a new document number']},
     ),
     Chunk(
@@ -1714,6 +1829,7 @@ RULES = [
         exclusive=False,
         tier='T4',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'HARD STOP. The question sounds procedural and is not.', 'caller_phrasings': ['Should I even do this?', 'Is it risky?']},
     ),
     Chunk(
@@ -1727,6 +1843,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': "No hedged version of this is acceptable, including 'you probably will'.", 'caller_phrasings': ['Am I eligible?', 'Do I get it?']},
     ),
     Chunk(
@@ -1740,6 +1857,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': 'UNVERIFIED', 'design_note': 'Maya must never speak a figure. Limits change annually and vary by programme and household size.', 'caller_phrasings': ['How much can I make?', "What's the cut-off?"]},
     ),
     Chunk(
@@ -1753,6 +1871,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'An unexpected share of cost is frequently an income-discrepancy artifact. High-value transfer, not a dead end.', 'caller_phrasings': ["What's this share of cost?", 'Do I owe money each month?']},
     ),
     Chunk(
@@ -1766,6 +1885,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Scope downgrade, Segment D. Patients rarely notice this until they are refused care.', 'caller_phrasings': ['They said restricted', 'I can only use the ER now']},
     ),
     Chunk(
@@ -1779,6 +1899,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Note several Aliados sites are Medi-Cal and CalFresh only and cannot assist with Covered California. Routing must check site capability.', 'caller_phrasings': ['Am I better off with the marketplace?']},
     ),
     Chunk(
@@ -1792,6 +1913,7 @@ RULES = [
         exclusive=False,
         tier='T3',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'Benefit design, not eligibility, but equally out of scope.', 'caller_phrasings': ['Do I have a copay?', 'What does it cover?']},
     ),
     Chunk(
@@ -1805,6 +1927,7 @@ RULES = [
         exclusive=False,
         tier='T4',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'WORKFLOW BREAKS. Renewal is set aside. Member centre engaged, not the enrolment counsellor.', 'caller_phrasings': ['I ran out of my insulin', "I can't pay for my pills"]},
     ),
     Chunk(
@@ -1818,6 +1941,7 @@ RULES = [
         exclusive=False,
         tier='T4',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'WORKFLOW BREAKS. Never triage clinically and never continue the renewal script.', 'caller_phrasings': ["I'm in pain", 'I think I need a doctor']},
     ),
     Chunk(
@@ -1831,6 +1955,7 @@ RULES = [
         exclusive=False,
         tier='T4',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'WORKFLOW BREAKS. Do not ask follow-up questions. Note the forms provide SSN and status exceptions for abuse, trafficking and crime witnesses — a person handles that, never Maya.', 'caller_phrasings': ["He won't let me", "I'm not safe at home"]},
     ),
     Chunk(
@@ -1844,6 +1969,7 @@ RULES = [
         exclusive=False,
         tier='T4',
         transfer=True,
+        case_fields=[],
         tags={'citation': '—', 'design_note': 'WORKFLOW BREAKS. Highest-priority escalation path in the product. Needs a defined, staffed, tested route before launch — not a queue.', 'caller_phrasings': ["I don't want to be here anymore"]},
     ),
     Chunk(

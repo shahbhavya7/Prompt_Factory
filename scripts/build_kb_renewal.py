@@ -160,6 +160,12 @@ def _rule_from_csv_row(row: dict) -> dict:
         "exclusive": False,
         "tier": tier,
         "transfer": behaviour["transfer"],
+        # Top-level, not just tucked into tags below: this is what
+        # assemble._case_record_section actually reads at retrieval time
+        # (Chunk.tags is provenance-only and never persisted to Postgres —
+        # see models.Chunk's own comment on the two fields). Kept in tags
+        # too for the humans reading this generated file.
+        "case_fields": list(_T2_CASE_FIELDS.get(row["ID"], [])),
         "tags": {
             "citation": row.get("Citation", "").strip(),
             "design_note": row.get("Design note", "").strip(),
@@ -590,7 +596,8 @@ def _render(rules: list[dict], stable_core: str, intent_exemplars: dict, valid_i
     for r in rules:
         lines.append("    Chunk(")
         for key in ("id", "title", "text", "cue", "intent", "priority", "terminal",
-                    "exclusive", "tier", "transfer", "requires", "sets", "step_order", "tags"):
+                    "exclusive", "tier", "transfer", "requires", "sets", "step_order",
+                    "case_fields", "tags"):
             if key not in r:
                 continue
             lines.append(f"        {key}={r[key]!r},")

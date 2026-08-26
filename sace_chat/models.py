@@ -45,6 +45,15 @@ class Chunk:
     # A campaign's own answer tier (e.g. renewal's T1-T4). None for campaigns
     # with no tier concept — coverage.
     tier: str | None = None
+    # The subset of state.case_record this rule is allowed to read and speak
+    # verbatim (a T2 rule's "requires_case_fields") — see
+    # assemble._case_record_section. Deliberately its own typed field, NOT
+    # folded into `tags`: `tags` above is explicitly "never queried", and
+    # this one very much is, on every turn, to decide whether to inject the
+    # CASE RECORD section at all. Injecting exactly the 1-2 fields a rule
+    # names, rather than the whole record, is what keeps the section's token
+    # cost near zero on every turn that does not need it.
+    case_fields: list = field(default_factory=list)
     # Whether this rule's reply is expected to hand the caller to a human.
     # Read by the never-say guard's fallback (see sace_chat/guards.py).
     transfer: bool = False

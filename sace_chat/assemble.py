@@ -114,6 +114,76 @@ def _collected_fields_section(collected_fields) -> str:
     return "\n".join(lines)
 
 
+# retrieve.CallState's renewal-only typed fields, in the order they render
+# under ALREADY ON FILE — no new section for these (per the Phase 3 review),
+# they merge into the existing one. Each entry is (attribute, default) so a
+# field still at its default is left out entirely rather than rendered as
+# noise ("willingness: undecided" on turn 1 tells the model nothing it
+# doesn't already know from ALREADY ASKED). Deliberately excludes
+# consent_recorded/address_updated_by_human/disposition/upload_link_sent —
+# those are human-agent bookkeeping (sace_chat/disposition.py), not
+# something Maya's own reply should ever reason about mid-call.
+_RENEWAL_ON_FILE_FIELDS = (
+    ("packet_received", None),
+    ("address_confirmed", None),
+    ("already_submitted", None),
+    ("willingness", "undecided"),
+    ("available_now", None),
+    ("has_camera_phone", None),
+    ("helper_at_home", None),
+    ("consent_prebriefed", False),
+)
+
+
+def _on_file_view(state, collected_fields: dict) -> dict:
+    """collected_fields merged with any non-default renewal CallState field —
+    see _RENEWAL_ON_FILE_FIELDS. A no-op merge for coverage: every renewal
+    field sits at its listed default for a coverage CallState (which HAS the
+    attributes, since CallState is one shared dataclass, but never anything
+    else in them), so this returns collected_fields completely unchanged and
+    the golden byte-identical prompt is untouched.
+    """
+    merged = dict(collected_fields)
+    for attr, default in _RENEWAL_ON_FILE_FIELDS:
+        value = getattr(state, attr, default)
+        if value != default and attr not in merged:
+            merged[attr] = value
+    return merged
+
+
+def _case_record_section(retrieval, case_record: dict) -> str | None:
+    """CASE RECORD — read-only facts about THIS caller, injected only when
+    the governing rule declares which fields it needs (Chunk.tags['case_fields'],
+    aka a T2 rule's `requires_case_fields`). Returns None (no section at all,
+    not an empty placeholder) for every other turn — the whole point is that
+    injecting the full case record on every turn would quietly undo the
+    prompt-size saving this architecture exists for; scoping it to exactly
+    the 1-2 fields one T2 rule names keeps the cost at a few tokens on the
+    handful of turns that actually need it, and literally zero everywhere
+    else, coverage included (coverage rules carry no case_fields tag at all).
+    """
+    rule = retrieval.governing
+    if rule is None:
+        return None
+    case_fields = list(getattr(rule.chunk, "case_fields", None) or [])
+    if not case_fields:
+        return None
+    record = case_record or {}
+    lines = [
+        "CASE RECORD — read-only facts about this caller; you may read these "
+        "out. If a field below is absent, say you will confirm and come back "
+        "rather than guessing:"
+    ]
+    for field in case_fields:
+        value = record.get(field)
+        if value:
+            lines.append(f"- {field}: {value}")
+        else:
+            lines.append(f"- {field}: (not on file — use the governing rule's own "
+                          f"fallback line verbatim; never guess this)")
+    return "\n".join(lines)
+
+
 def _history_section(history) -> str:
     recent = (history or [])[-HISTORY_TURNS:]
     lines = ["RECENT TURNS (context for who said what, not a source of content):"]
@@ -128,7 +198,14 @@ def build_turn_prompt(stable_core: str, state, retrieval, history, reinforce_rea
         stable_core.strip(),
         _governing_section(retrieval),
         _reference_section(retrieval),
-        _collected_fields_section(getattr(state, "collected_fields", {})),
+    ]
+    case_record_section = _case_record_section(retrieval, getattr(state, "case_record", {}))
+    if case_record_section is not None:
+        sections.append(case_record_section)
+    sections += [
+        _collected_fields_section(
+            _on_file_view(state, getattr(state, "collected_fields", {}))
+        ),
         _asked_section(getattr(state, "asked_questions", [])),
         _history_section(history),
         _TURN_INSTRUCTION,
