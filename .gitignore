@@ -8,3 +8,4 @@ console-recordings/
 call_logs/
 frontend/node_modules/
 frontend/dist/
+logs/
