@@ -201,6 +201,13 @@ class AnswerCacheRow(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     last_hit_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Manual retirement, never deletion — a deleted row loses the evidence for
+    # why it was wrong. lookup() filters on this unconditionally (default TRUE,
+    # so existing rows keep serving exactly as before); a row is retired by
+    # hand (scripts/retire_cache_row.py) after scripts/cache_report.py flags it.
+    # Explicitly NOT an LRU/LFU/size eviction — see cache_report.py's docstring.
+    active = Column(Boolean, nullable=False, default=True)
+
 
 class NeedsReviewRow(Base):
     """The human review queue: every candidate rule that did NOT go straight
@@ -382,6 +389,12 @@ def init_db():
         conn.execute(
             text("ALTER TABLE answer_cache ADD COLUMN IF NOT EXISTS tier VARCHAR")
         )
+        # Manual retirement flag (see AnswerCacheRow.active) — default TRUE so
+        # every existing row keeps serving exactly as before.
+        conn.execute(
+            text("ALTER TABLE answer_cache ADD COLUMN IF NOT EXISTS "
+                 "active BOOLEAN NOT NULL DEFAULT TRUE")
+        )
         # Added after the first rows existed. The default matters: '' means "ends
         # on no question", which is the permissive value, so a pre-existing row
         # would become servable on ANY pending question — the exact mistake the
@@ -408,6 +421,27 @@ def init_db():
         conn.execute(
             text("CREATE TABLE IF NOT EXISTS answer_cache_renewal (LIKE answer_cache INCLUDING ALL)")
         )
+        # Renewal-only usage instrumentation (scripts/cache_report.py reads
+        # these; nothing evicts on them — see that script's docstring for why).
+        # Run separately from the LIKE above: that only fires on first CREATE,
+        # so a database where answer_cache_renewal already existed needs these
+        # added explicitly too.
+        for ddl in (
+            "ALTER TABLE answer_cache_renewal ADD COLUMN IF NOT EXISTS "
+            "correct_hits INTEGER NOT NULL DEFAULT 0",
+            # The rule id the full pipeline grounded to on a MISS whose nearest
+            # row was this one — a repeated (row's own rule == miss_grounded_to)
+            # means real callers keep almost-but-not-quite matching a rule this
+            # row is supposed to cover: an under-coverage signal, not a bad row.
+            "ALTER TABLE answer_cache_renewal ADD COLUMN IF NOT EXISTS "
+            "miss_grounded_to VARCHAR",
+            # Present on a fresh answer_cache_renewal via the LIKE above, but a
+            # database where the table already existed before `active` was
+            # added to answer_cache needs it explicitly.
+            "ALTER TABLE answer_cache_renewal ADD COLUMN IF NOT EXISTS "
+            "active BOOLEAN NOT NULL DEFAULT TRUE",
+        ):
+            conn.execute(text(ddl))
 
 
 def _has_answer_cache_column(conn, column: str) -> bool:

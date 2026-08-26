@@ -88,10 +88,10 @@ def load_answer_cache_renewal(session, embedder, entries):
             text(
                 "INSERT INTO answer_cache_renewal "
                 "(id, question, embedding, reply, intent, governing_rule_id, "
-                " tier, source, pending_fingerprint, hit_count) "
+                " tier, source, pending_fingerprint, hit_count, active) "
                 "VALUES "
                 "(:id, :question, CAST(:embedding AS vector), :reply, :intent, "
-                " :governing_rule_id, :tier, 'seed', '', 0)"
+                " :governing_rule_id, :tier, 'seed', '', 0, TRUE)"
             ),
             {
                 "id": f"cache_seed_{rule.id}_{i}",

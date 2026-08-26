@@ -564,6 +564,7 @@ def lookup(conn, message_vec, intent: str | None, *, pending: str = "",
             f"       pending_fingerprint, "
             f"       embedding <=> CAST(:q AS vector) AS distance "
             f"FROM {table} WHERE {where_intent} "
+            f"  AND active = TRUE "
             f"  AND (pending_fingerprint = '' OR pending_fingerprint = :pending) "
             f"ORDER BY distance LIMIT 1"
         ),
@@ -594,21 +595,91 @@ def lookup(conn, message_vec, intent: str | None, *, pending: str = "",
     }
 
 
-def record_hit(cache_id: str) -> None:
+def record_hit(cache_id: str, *, table: str = "answer_cache") -> None:
     """Bookkeeping for a served hit. Tolerant by design — a stats update must
-    never be able to break a live call."""
+    never be able to break a live call. Fire-and-forget: call this, don't
+    await it — it must never add to turn latency."""
     try:
         with SessionLocal() as session:
             session.execute(
                 sql_text(
-                    "UPDATE answer_cache SET hit_count = hit_count + 1, "
-                    "last_hit_at = now() WHERE id = :i"
+                    f"UPDATE {table} SET hit_count = hit_count + 1, "
+                    f"last_hit_at = now() WHERE id = :i"
                 ),
                 {"i": cache_id},
             )
             session.commit()
     except Exception as exc:  # pragma: no cover - stats path
         print(f"[cache] record_hit failed: {type(exc).__name__}: {exc}")
+
+
+def record_correct_hit(cache_id: str, *, table: str = "answer_cache") -> None:
+    """A served hit that a later signal (no correction, regeneration, or
+    transfer followed it) confirmed was right. Call this from wherever that
+    signal is detected — NOT from record_hit, which fires the instant a reply
+    is served and cannot yet know whether it held up.
+
+    Deliberately only ever increments: a hit that WAS corrected just never
+    gets this call, so hit_count - correct_hits IS the wrong-hit count. No
+    separate "mark wrong" path to keep in sync with it.
+    """
+    try:
+        with SessionLocal() as session:
+            session.execute(
+                sql_text(f"UPDATE {table} SET correct_hits = correct_hits + 1 WHERE id = :i"),
+                {"i": cache_id},
+            )
+            session.commit()
+    except Exception as exc:  # pragma: no cover - stats path
+        print(f"[cache] record_correct_hit failed: {type(exc).__name__}: {exc}")
+
+
+def nearest_row(conn, message_vec, intent: str | None, *, table: str = "answer_cache"):
+    """The single nearest row in this intent's section, ignoring
+    CACHE_THRESHOLD/active/tier — for miss instrumentation only (see
+    record_miss), never for serving. A MISS still has a nearest row; this is
+    how record_miss knows which row to attribute it to.
+    """
+    where_intent = "intent IS NULL" if intent is None else "intent = :intent"
+    params = {"q": str(list(message_vec))}
+    if intent is not None:
+        params["intent"] = intent
+    row = conn.execute(
+        sql_text(
+            f"SELECT id, governing_rule_id, "
+            f"       embedding <=> CAST(:q AS vector) AS distance "
+            f"FROM {table} WHERE {where_intent} "
+            f"ORDER BY distance LIMIT 1"
+        ),
+        params,
+    ).fetchone()
+    if row is None:
+        return None
+    return {"id": row.id, "governing_rule_id": row.governing_rule_id,
+            "similarity": round(1.0 - float(row.distance), 4)}
+
+
+def record_miss(nearest_id: str, grounded_rule_id: str, *, table: str = "answer_cache") -> None:
+    """On a cache MISS, once the full pipeline has determined which rule
+    actually governed the turn: record that on the nearest row (from
+    nearest_row(), computed BEFORE the miss was known to be a miss — this
+    never triggers a second embedding call). cache_report.py looks for rows
+    where this repeatedly equals the row's own governing_rule_id: real callers
+    keep almost matching a rule this row is supposed to cover, which means the
+    seeded phrasings for it don't match how people actually talk — an ADD
+    candidate, not a reason to retire anything.
+    """
+    if not nearest_id:
+        return
+    try:
+        with SessionLocal() as session:
+            session.execute(
+                sql_text(f"UPDATE {table} SET miss_grounded_to = :r WHERE id = :i"),
+                {"r": grounded_rule_id, "i": nearest_id},
+            )
+            session.commit()
+    except Exception as exc:  # pragma: no cover - stats path
+        print(f"[cache] record_miss failed: {type(exc).__name__}: {exc}")
 
 
 def store(*, question: str, question_vec, reply: str, intent: str | None,
@@ -690,11 +761,11 @@ def store(*, question: str, question_vec, reply: str, intent: str | None,
                     f"INSERT INTO {table} "
                     f"(id, question, embedding, reply, intent, governing_rule_id, "
                     f" grounding_cosine, source_session_id, pending_fingerprint, "
-                    f" source, tier, hit_count) "
+                    f" source, tier, hit_count, active) "
                     f"VALUES "
                     f"(:id, :question, CAST(:embedding AS vector), :reply, :intent, "
                     f" :governing_rule_id, :grounding_cosine, :source_session_id, "
-                    f" :pending_fingerprint, :source, :tier, 0)"
+                    f" :pending_fingerprint, :source, :tier, 0, TRUE)"
                 ),
                 {
                     "id": row_id, "question": question, "embedding": str(list(vec)),
