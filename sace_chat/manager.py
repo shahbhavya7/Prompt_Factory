@@ -137,16 +137,22 @@ def strip_control_tokens(reply: str) -> tuple[str, bool]:
     return re.sub(r"\s{2,}", " ", stripped), True
 
 
-def validate_turn(decision: dict, state) -> dict:
+def validate_turn(decision: dict, state, valid_intents=None) -> dict:
     """Clamp a model decision to values the rest of the system can act on.
 
     Anything out of vocabulary is dropped and reported in `warnings`, so a bad
     decision degrades to "no intent" rather than corrupting state.
+
+    `valid_intents` defaults to the coverage campaign's vocabulary; a caller
+    on a different campaign (see sace_chat.campaign) passes its own so a
+    real, in-vocabulary label is not clamped to "none" just because it isn't
+    one of THIS campaign's labels.
     """
     warnings = []
+    valid_intents = valid_intents if valid_intents is not None else VALID_INTENTS
 
     intent = decision.get("intent")
-    if intent not in VALID_INTENTS:
+    if intent not in valid_intents:
         if intent is not None:
             warnings.append(f"intent {intent!r} not in VALID_INTENTS; using 'none'")
         intent = "none"

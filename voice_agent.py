@@ -66,11 +66,15 @@ def _to_frame(samples: np.ndarray, sample_rate: int, channels: int = 1) -> rtc.A
     )
 
 from sace_chat import manager
+from sace_chat.campaign import RENEWAL_OPENING_LINE, get_campaign
 from sace_chat.db import init_db, record_call_transcript, record_turn
 from sace_chat.embeddings import get_embedder
 from sace_chat.engine import Engine, assert_message_present, question_key
 from sace_chat.kb import RULES, STABLE_CORE
+from sace_chat.kb_renewal import RULES as RENEWAL_RULES
 from sace_chat.retrieve import CallState
+
+_RULES_BY_CAMPAIGN = {"coverage": RULES, "renewal": RENEWAL_RULES}
 
 # ─────────────────────────────── config ───────────────────────────────
 STT_MODEL = os.environ.get("DEEPGRAM_STT_MODEL", "nova-3")
@@ -311,13 +315,16 @@ class SaceVoiceAgent(Agent):
     concurrent callers never share retrieval context.
     """
 
-    def __init__(self, engine: Engine, session_id: str):
+    def __init__(self, engine: Engine, session_id: str, campaign_name: str = "coverage"):
         # `instructions` is replaced per turn with the SACE-assembled prompt (see
         # on_user_turn_completed). The stable core is only the initial value so a
-        # reply before the first user turn is not unguided.
-        super().__init__(instructions=STABLE_CORE, allow_interruptions=True)
+        # reply before the first user turn is not unguided. Taken from the
+        # engine, not the module-level STABLE_CORE, so this is right regardless
+        # of which campaign `engine` was built for.
+        super().__init__(instructions=engine.stable_core, allow_interruptions=True)
         self.engine = engine
         self.session_id = session_id
+        self.campaign_name = campaign_name
         self.state = CallState()
         self.history: list[str] = []
         self.turn_index = 0
@@ -633,6 +640,7 @@ class SaceVoiceAgent(Agent):
             session_id=self.session_id,
             turn_index=pending["turn_index"],
             source="voice",
+            campaign=self.campaign_name,
             user_text=pending["user_text"],
             reply_text=reply_text,
             prompt_sent=pending["prompt_sent"],
@@ -784,17 +792,32 @@ def build_engine() -> Engine:
     """One Engine per worker process. The KB embedder is the OpenAI 1536-dim one
     because it must match the pgvector column; IntentRouter separately picks up
     the hot-path embedder (EMBED_HOTPATH=local|openai) for exemplar matching
-    only. See embeddings.get_hotpath_embedder."""
+    only. See embeddings.get_hotpath_embedder.
+
+    Which campaign this worker serves is resolved once here, from
+    SACE_CAMPAIGN — every table, prompt and exemplar set below follows from
+    that one resolution rather than each being decided separately.
+    """
     from sace_chat.llm import get_llm
+
+    from sace_chat.campaign import RENEWAL_FALLBACK_REPLY
+
+    campaign = get_campaign()
+    rules = _RULES_BY_CAMPAIGN[campaign.name]
+    fallback_reply = RENEWAL_FALLBACK_REPLY if campaign.name == "renewal" else None
 
     init_db()
     engine = Engine(
-        stable_core=STABLE_CORE, rules=RULES, embedder=get_embedder(),
+        stable_core=campaign.stable_core, rules=rules, embedder=get_embedder(),
         manager=manager, llm=get_llm(),
+        table=campaign.chunks_table, cache_table=campaign.cache_table,
+        placeholders=campaign.placeholders, exemplars=campaign.intent_exemplars,
+        valid_intents=campaign.valid_intents, fallback_reply=fallback_reply,
+        campaign_name=campaign.name,
     )
     # Exemplars embedded once here, at startup, so no turn pays for them.
     engine.router.warm()
-    print(f"[boot] engine ready · {len(RULES)} seed rules · "
+    print(f"[boot] engine ready · campaign={campaign.name} · {len(rules)} seed rules · "
           f"hot-path embedder shares KB model: {engine.router.shares_kb_embedder}")
     return engine
 
@@ -843,15 +866,17 @@ async def run_call(ctx: JobContext):
     """One call, start to finish. Separated from `entrypoint` so a second call
     can be started in the same process (see _ws_handler's "start_call")."""
     session_id = f"{ctx.room.name}:{uuid.uuid4().hex[:8]}"
-    broadcast({"type": "call_started", "session_id": session_id})
     engine = ctx.proc.userdata.get("engine") or build_engine()
+    # The existing session-header slot gets the campaign name too, so a
+    # renewal call is visibly distinct from a coverage one on the dashboard.
+    broadcast({"type": "call_started", "session_id": session_id, "campaign": engine.campaign_name})
     vad = ctx.proc.userdata.get("vad") or silero.VAD.load(
         min_silence_duration=VAD_MIN_SILENCE,
         activation_threshold=VAD_ACTIVATION,
         min_speech_duration=VAD_MIN_SPEECH,
     )
 
-    agent = SaceVoiceAgent(engine, session_id)
+    agent = SaceVoiceAgent(engine, session_id, campaign_name=engine.campaign_name)
     session = AgentSession(
         stt=deepgram.STT(
             model=STT_MODEL,
@@ -957,17 +982,24 @@ async def run_call(ctx: JobContext):
     broadcast(audio_state())
 
     # Maya opens the call — retrieval has nothing to route on until the caller
-    # speaks, so the opening line comes from the KB's own opening rule.
-    opening = next((r for r in RULES if r.id == "open_greeting"), None)
-    if opening is not None:
-        from sace_chat.assemble import _substitute_placeholders
-        import re as _re
-        quoted = _re.findall(r'"([^"]{40,})"', _substitute_placeholders(opening.text))
-        if quoted:
-            opening_text = quoted[0]
-            await session.say(opening_text, allow_interruptions=True)
-            agent.history.append(f"Maya: {opening_text}")
-            agent.state.asked_questions.append(opening_text)
+    # speaks. Coverage finds its opening line in the KB's own opening rule;
+    # renewal has no flow yet (see sace_chat.campaign), so its opening is one
+    # fixed, already-substituted line rather than a rule to search for.
+    opening_text = None
+    if engine.campaign_name == "renewal":
+        opening_text = RENEWAL_OPENING_LINE
+    else:
+        opening = next((r for r in RULES if r.id == "open_greeting"), None)
+        if opening is not None:
+            from sace_chat.assemble import _substitute_placeholders
+            import re as _re
+            quoted = _re.findall(r'"([^"]{40,})"', _substitute_placeholders(opening.text))
+            if quoted:
+                opening_text = quoted[0]
+    if opening_text is not None:
+        await session.say(opening_text, allow_interruptions=True)
+        agent.history.append(f"Maya: {opening_text}")
+        agent.state.asked_questions.append(opening_text)
 
 
 async def _close(session: AgentSession):

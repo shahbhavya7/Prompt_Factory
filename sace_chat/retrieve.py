@@ -158,7 +158,8 @@ class IntentRouter:
     round-trips to every reply.
     """
 
-    def __init__(self, embedder, threshold: float = INTENT_THRESHOLD, hotpath_embedder=None):
+    def __init__(self, embedder, threshold: float = INTENT_THRESHOLD, hotpath_embedder=None,
+                 exemplars: dict | None = None):
         # `embedder` is the KB embedder (pgvector-compatible). `hotpath` may be a
         # different, smaller, local model — exemplar matching never touches
         # Postgres, so its dimension only has to agree with itself. See
@@ -168,6 +169,11 @@ class IntentRouter:
         self.embedder = embedder
         self.hotpath = hotpath_embedder or get_hotpath_embedder(embedder)
         self.threshold = threshold
+        # Defaults to the coverage campaign's exemplars — a caller on a
+        # different campaign (see sace_chat.campaign) passes its own, so
+        # intent routing is not silently stuck on kb.INTENT_EXEMPLARS
+        # regardless of which campaign is actually active.
+        self.exemplars = exemplars if exemplars is not None else INTENT_EXEMPLARS
         self._vectors: list[tuple[str, list[float]]] | None = None
 
     @property
@@ -178,7 +184,7 @@ class IntentRouter:
         if self._vectors is not None:
             return
         labels, texts = [], []
-        for intent, exemplars in INTENT_EXEMPLARS.items():
+        for intent, exemplars in self.exemplars.items():
             for exemplar in exemplars:
                 labels.append(intent)
                 texts.append(exemplar)
@@ -285,6 +291,7 @@ def retrieve(
     history: list | None = None,
     router: IntentRouter | None = None,
     table: str = "chunks",
+    cache_table: str = "answer_cache",
     precedence=None,
     use_cache: bool = True,
 ) -> Retrieval:
@@ -349,6 +356,7 @@ def retrieve(
             hit = answer_cache.lookup(
                 conn, message_vec, intent,
                 pending=answer_cache.pending_fingerprint(state),
+                table=cache_table,
             )
             if hit is not None:
                 result.cache_hit = hit

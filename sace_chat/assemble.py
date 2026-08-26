@@ -55,8 +55,8 @@ is your reply.
 """
 
 
-def _substitute_placeholders(text: str) -> str:
-    for placeholder, value in DEMO_PLACEHOLDERS.items():
+def _substitute_placeholders(text: str, placeholders: dict = DEMO_PLACEHOLDERS) -> str:
+    for placeholder, value in placeholders.items():
         text = text.replace(placeholder, value)
     return text
 
@@ -121,7 +121,8 @@ def _history_section(history) -> str:
     return "\n".join(lines)
 
 
-def build_turn_prompt(stable_core: str, state, retrieval, history, reinforce_reason: str = "") -> str:
+def build_turn_prompt(stable_core: str, state, retrieval, history, reinforce_reason: str = "",
+                       placeholders: dict = DEMO_PLACEHOLDERS) -> str:
     """System prompt for the turn decision. The caller's message is sent
     separately, as the user message."""
     sections = [
@@ -135,4 +136,4 @@ def build_turn_prompt(stable_core: str, state, retrieval, history, reinforce_rea
     ]
     if reinforce_reason:
         sections.append(_REINFORCE.format(reason=reinforce_reason))
-    return _substitute_placeholders("\n\n".join(sections))
+    return _substitute_placeholders("\n\n".join(sections), placeholders)

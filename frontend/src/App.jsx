@@ -12,6 +12,10 @@ import ReviewQueue from "./components/ReviewQueue";
 
 const initialState = {
   sessionId: null,
+  // Which CampaignConfig this call is running (see sace_chat.campaign) —
+  // null on a build that predates campaigns, which the header treats as
+  // "coverage".
+  campaign: null,
   callActive: false,
   turns: [], // completed {retrieval + turn} pairs, in order
   pendingRetrieval: null, // a retrieval event with no matching turn yet
@@ -47,6 +51,7 @@ function reducer(state, event) {
         // Survives the reset: it describes the queue, not this call.
         pendingCount: state.pendingCount,
         sessionId: event.session_id,
+        campaign: event.campaign || null,
         callActive: true,
       };
     case "call_ended":
@@ -258,6 +263,7 @@ export default function App() {
             connected={connected}
             callActive={state.callActive}
             sessionId={state.sessionId}
+            campaign={state.campaign}
             starting={state.starting}
             agentBooting={agentBooting}
             startError={state.startError || agentError}

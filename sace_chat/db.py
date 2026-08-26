@@ -95,6 +95,10 @@ class TurnRow(Base):
     session_id = Column(String, nullable=False, index=True)
     turn_index = Column(Integer, nullable=False)
     source = Column(String, nullable=False)  # voice | chat
+    # Which CampaignConfig this turn ran under (see sace_chat.campaign).
+    # Nullable — a turn recorded before this column existed has no campaign
+    # of its own; the dashboard treats that the same as "coverage".
+    campaign = Column(String, nullable=True)
 
     user_text = Column(Text, nullable=False)
     reply_text = Column(Text, nullable=False)
@@ -286,6 +290,9 @@ def init_db():
     # existing one, so the new routing columns are added explicitly and then
     # backfilled from the old ones. Idempotent — safe to run every boot.
     with engine.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE turns ADD COLUMN IF NOT EXISTS campaign VARCHAR")
+        )
         for ddl in (
             "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS cue TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS intent VARCHAR",

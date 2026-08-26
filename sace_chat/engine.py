@@ -20,8 +20,8 @@ import os
 import re
 import time
 
-from sace_chat import answer_cache
-from sace_chat.assemble import build_turn_prompt
+from sace_chat import answer_cache, guards
+from sace_chat.assemble import DEMO_PLACEHOLDERS, build_turn_prompt
 from sace_chat.db import engine as db_engine
 from sace_chat.llm import build_messages, parse_json_object, render_messages
 from sace_chat.retrieve import IntentRouter, retrieve
@@ -190,7 +190,8 @@ def assert_message_present(prompt_sent: str, user_message: str):
         )
 
 
-def no_rule_decision(user_message: str, retrieval, elapsed_ms: float = 0.0) -> dict:
+def no_rule_decision(user_message: str, retrieval, elapsed_ms: float = 0.0,
+                      fallback_reply: str = NO_RULE_REPLY) -> dict:
     """Deterministic fallback when memory has no relevant chunk.
 
     This is intentionally polite and terminal: if no rule governs the turn,
@@ -217,7 +218,7 @@ def no_rule_decision(user_message: str, retrieval, elapsed_ms: float = 0.0) -> d
         "elapsed_ms": elapsed_ms,
         "turn_json": {
             "intent": retrieval.intent or "none",
-            "reply": NO_RULE_REPLY,
+            "reply": fallback_reply,
             "call_should_end": True,
             "extracted_fields": {},
         },
@@ -344,7 +345,9 @@ def question_key(question: str) -> str:
 
 class Engine:
     def __init__(self, stable_core, rules=None, embedder=None, manager=None, llm=None,
-                 monolith_text=None, table="chunks", chunks=None):
+                 monolith_text=None, table="chunks", chunks=None,
+                 cache_table="answer_cache", placeholders=None, exemplars=None,
+                 valid_intents=None, fallback_reply=None, campaign_name=None):
         self.stable_core = stable_core
         self.rules = rules if rules is not None else (chunks or [])
         self.embedder = embedder
@@ -352,13 +355,22 @@ class Engine:
         self.llm = llm
         self.monolith_tokens = est_tokens(monolith_text) if monolith_text else MONOLITH_TOKENS
         self.table = table
-        self.router = IntentRouter(embedder)
+        # All default to the coverage campaign's existing behaviour — a caller
+        # on a different campaign (see sace_chat.campaign) passes its own, so
+        # this stays a no-op change for every existing call site.
+        self.cache_table = cache_table
+        self.placeholders = placeholders if placeholders is not None else DEMO_PLACEHOLDERS
+        self.valid_intents = valid_intents  # None -> manager.validate_turn's own default
+        self.fallback_reply = fallback_reply if fallback_reply is not None else NO_RULE_REPLY
+        self.campaign_name = campaign_name or "coverage"
+        self.router = IntentRouter(embedder, exemplars=exemplars)
 
     def _retrieve(self, state, message, history):
         with db_engine.connect() as conn:
             return retrieve(
                 conn, state, message, self.embedder,
                 history=history, router=self.router, table=self.table,
+                cache_table=self.cache_table,
                 precedence=self.manager.resolve_precedence,
             )
 
@@ -379,7 +391,8 @@ class Engine:
         """
         t0 = time.perf_counter()
         retrieval = self._retrieve(state, user_message, history)
-        system_prompt = build_turn_prompt(self.stable_core, state, retrieval, history)
+        system_prompt = build_turn_prompt(self.stable_core, state, retrieval, history,
+                                           placeholders=self.placeholders)
 
         # Captured here, at the moment of assembly, from the same builder the
         # client sends — never rebuilt afterwards from state that has moved on.
@@ -455,8 +468,9 @@ class Engine:
         prompt = ctx["system_prompt"]
         notes.extend(ctx["notes"])
         if retrieval.governing is None:
-            return NO_RULE_REPLY, no_rule_decision(
-                user_message, retrieval, (time.perf_counter() - start) * 1000
+            return self.fallback_reply, no_rule_decision(
+                user_message, retrieval, (time.perf_counter() - start) * 1000,
+                fallback_reply=self.fallback_reply,
             )
 
         # THE FAST PATH. Everything below this point — assembly, the completion
@@ -466,7 +480,7 @@ class Engine:
             dbg = cached_decision(
                 user_message, retrieval, (time.perf_counter() - start) * 1000
             )
-            answer_cache.record_hit(retrieval.cache_hit["id"])
+            answer_cache.record_hit(retrieval.cache_hit["id"], table=self.cache_table)
             return dbg["turn_json"]["reply"], dbg
 
         valid, raw = self._decide(
@@ -476,13 +490,23 @@ class Engine:
         scores = score_reply(valid["reply"], retrieval.rules, self.embedder)
         outcome, reason = self._judge(scores, governing, retrieval)
 
+        # Code-enforced backstop on every LLM-generated reply — never on a
+        # cache hit or the fixed no-rule fallback above, neither of which is
+        # generated. Piggybacks on the SAME single regeneration budget as the
+        # grounding check rather than spending a second completion call.
+        never_say = guards.check_never_say(valid["reply"])
+        if never_say:
+            notes.append(f"never-say guard: {never_say}")
+            reason = reason or never_say
+
         regenerated = False
         if reason and validate_only:
             notes.append(f"validate-only: {outcome} recorded, not corrected ({reason})")
         elif reason:
             notes.append(f"regenerating before speech: {reason}")
             prompt = build_turn_prompt(
-                self.stable_core, state, retrieval, history, reinforce_reason=reason
+                self.stable_core, state, retrieval, history, reinforce_reason=reason,
+                placeholders=self.placeholders,
             )
             valid, raw = self._decide(prompt, user_message, state, notes, sent_log)
             scores = score_reply(valid["reply"], retrieval.rules, self.embedder)
@@ -490,6 +514,17 @@ class Engine:
             regenerated = True
             if still_wrong:
                 notes.append(f"still failing after one regeneration: {still_wrong}")
+            # The one regeneration is spent — a SECOND never-say hit does not
+            # buy a second completion call. Speak the fixed fallback line
+            # instead of anything the model generated.
+            still_never_say = guards.check_never_say(valid["reply"])
+            if still_never_say:
+                notes.append(
+                    f"never-say guard still fires after regeneration ({still_never_say}); "
+                    f"falling back to the fixed fallback line instead of speaking"
+                )
+                valid["reply"] = self.fallback_reply
+                outcome = "never_say_blocked"
 
         reply_text = valid["reply"]
         if governing is not None:
@@ -634,6 +669,8 @@ class Engine:
             governing_rule_id=governing.chunk.id if governing else None,
             grounding_cosine=debug.get("governing_cosine"),
             pending=pending,
+            tier=getattr(governing.chunk, "tier", None) if governing else None,
+            table=self.cache_table,
         )
         if cache_id:
             debug.setdefault("notes", []).append(f"cached as {cache_id} for reuse")
@@ -673,7 +710,7 @@ class Engine:
                 "call_should_end": False,
                 "extracted_fields": {},
             }
-        valid = self.manager.validate_turn(decision, state)
+        valid = self.manager.validate_turn(decision, state, valid_intents=self.valid_intents)
         notes.extend(valid["warnings"])
         return valid, raw
 
@@ -697,13 +734,14 @@ class Engine:
         notes.extend(ctx["notes"])
         if retrieval.governing is None:
             final = no_rule_decision(
-                user_message, retrieval, (time.perf_counter() - start) * 1000
+                user_message, retrieval, (time.perf_counter() - start) * 1000,
+                fallback_reply=self.fallback_reply,
             )
             state.intent = retrieval.intent or "none"
             state.opt_out = state.opt_out or retrieval.opt_out
             state.ended = True
             history.append(f"Caller: {user_message}")
-            history.append(f"Maya: {NO_RULE_REPLY}")
+            history.append(f"Maya: {self.fallback_reply}")
             final["state_snapshot"] = {
                 "intent": state.intent,
                 "opt_out": state.opt_out,
@@ -711,7 +749,7 @@ class Engine:
                 "asked_questions": list(state.asked_questions),
                 "collected_fields": dict(state.collected_fields),
             }
-            return NO_RULE_REPLY, state, final
+            return self.fallback_reply, state, final
 
         # THE FAST PATH — steps 3, 4 and the regeneration budget are all skipped.
         # Only a turn whose reply does not depend on call state is ever cached
@@ -721,7 +759,7 @@ class Engine:
             final = cached_decision(
                 user_message, retrieval, (time.perf_counter() - start) * 1000
             )
-            answer_cache.record_hit(retrieval.cache_hit["id"])
+            answer_cache.record_hit(retrieval.cache_hit["id"], table=self.cache_table)
             reply_text = final["turn_json"]["reply"]
             state.intent = retrieval.intent or "none"
             state.opt_out = state.opt_out or retrieval.opt_out
@@ -756,7 +794,8 @@ class Engine:
         elif reason:
             notes.append(f"regenerating: {reason}")
             prompt = build_turn_prompt(
-                self.stable_core, state, retrieval, history, reinforce_reason=reason
+                self.stable_core, state, retrieval, history, reinforce_reason=reason,
+                placeholders=self.placeholders,
             )
             valid, raw = self._decide(prompt, user_message, state, notes, sent_log)
             scores = score_reply(valid["reply"], retrieval.rules, self.embedder)

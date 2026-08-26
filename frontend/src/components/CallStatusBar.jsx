@@ -2,6 +2,7 @@ export default function CallStatusBar({
   connected,
   callActive,
   sessionId,
+  campaign,
   starting,
   agentBooting,
   startError,
@@ -23,7 +24,11 @@ export default function CallStatusBar({
               ? "starting the call…"
               : "no call in progress"}
       </span>
-      {sessionId && <span className="chip">{sessionId}</span>}
+      {/* Same chip, not a new one — a renewal call needs to read as visibly
+          different from any other campaign right here, not in a second slot. */}
+      {sessionId && (
+        <span className="chip">{campaign ? `${campaign} · ${sessionId}` : sessionId}</span>
+      )}
       {/* The agent's own reason for refusing a start. Shown rather than only
           logged: the button is remote, so a refusal that appears nowhere is
           indistinguishable from a button that does nothing. */}
