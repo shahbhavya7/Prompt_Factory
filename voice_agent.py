@@ -622,6 +622,9 @@ class SaceVoiceAgent(Agent):
         self.state.opt_out = self.state.opt_out or pending["retrieval"].opt_out
         self.state.ended = self.state.ended or bool(verdict.get("call_should_end") or pending["terminal"])
         self.state.collected_fields.update(verdict.get("extracted_fields", {}))
+        from sace_chat.engine import _sync_renewal_state
+
+        _sync_renewal_state(self.state, pending["governing"], reply_text)
         asked = verdict.get("asked_question")
         if asked and question_key(asked) not in {question_key(q) for q in self.state.asked_questions}:
             self.state.asked_questions.append(asked)
@@ -693,6 +696,14 @@ class SaceVoiceAgent(Agent):
                # Set by Engine._maybe_cache on the verdict prepare_reply
                # returned; absent on a turn that never reached it.
                "cache_stored": verdict.get("cache_stored")}
+        # The hand-off packet — extra fields on this SAME turn event, not a
+        # new event type (see sace_chat/transfer.py's docstring): the
+        # frontend ignores fields it doesn't know, so this renders nothing
+        # today and needs no frontend change to surface later.
+        if gov is not None and gov.chunk.id == "warm_transfer":
+            from sace_chat.transfer import build_transfer_packet
+
+            row["transfer_packet"] = build_transfer_packet(self.state)
         self.turn_log.append(row)
 
         # Completes the story the "retrieval" event started: the reply that

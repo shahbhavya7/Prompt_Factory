@@ -356,6 +356,22 @@ def cached_decision(user_message: str, retrieval, elapsed_ms: float = 0.0,
     }
 
 
+def _coerce_bool_like(value):
+    """A model-extracted "True"/"False" (string, any case) as a real bool;
+    anything else is returned unchanged. See _apply_field_defaults — a
+    string survives all the way into collected_fields and then into the SQL
+    prerequisite gate's `->> 'true'` text comparison, where a capitalisation
+    mismatch ("True" vs "true") silently fails a requirement that should
+    have passed."""
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low == "true":
+            return True
+        if low == "false":
+            return False
+    return value
+
+
 def _apply_field_defaults(governing, valid: dict, state) -> None:
     """Deterministically fill in a flow rule's own `sets` defaults for any
     field the model did not itself extract this turn — see models.Chunk.sets
@@ -375,9 +391,66 @@ def _apply_field_defaults(governing, valid: dict, state) -> None:
         return
     known = getattr(state, "collected_fields", None) or {}
     for field_name, default in sets.items():
-        if field_name in valid["extracted_fields"] or field_name in known:
+        if field_name in valid["extracted_fields"]:
+            # Present, but a model-supplied value can still be a bool-shaped
+            # STRING rather than a real bool (observed: consent_prebriefed
+            # extracted as "True", which then silently failed warm_transfer's
+            # own `requires` gate forever — see _coerce_bool_like). Only
+            # coerced when the rule's own default says this field IS a bool;
+            # a genuine string value (an address, a date) is left untouched.
+            if isinstance(default, bool):
+                valid["extracted_fields"][field_name] = _coerce_bool_like(
+                    valid["extracted_fields"][field_name]
+                )
+            continue
+        if field_name in known:
             continue
         valid["extracted_fields"][field_name] = default
+
+
+# Which collected_fields keys mirror onto a typed CallState attribute — see
+# retrieve.CallState's renewal fields. Deliberately excludes
+# address_updated_by_human and consent_recorded: those two are never present
+# in collected_fields at all (no flow rule's `sets` ever names them, and the
+# model is never asked to extract them), so listing them here would be dead
+# code, not a safety net — see sace_chat/disposition.py, the only place
+# either one may be set.
+_RENEWAL_MIRRORED_FIELDS = (
+    "packet_received", "already_submitted", "willingness", "available_now",
+    "has_camera_phone", "helper_at_home", "consent_prebriefed",
+)
+
+
+def _sync_renewal_state(state, governing=None, reply_text: str | None = None) -> None:
+    """Mirror the flow-tracked collected_fields keys onto CallState's typed
+    renewal attributes (retrieve.py), so other code — the transfer packet,
+    the CASE RECORD/ALREADY ON FILE rendering — gets real attribute access
+    instead of a bare dict lookup. collected_fields, not these mirrors,
+    stays the source of truth the SQL prerequisite gate (retrieve.py's
+    _fetch_general) reads; this never writes back to it.
+
+    Also appends to kb_answers_given whenever an intent-routed rule (a real
+    digression, or a T4 short-circuit — both carry intent != None; a flow
+    rule never does) governed this turn, for warm_transfer's hand-off packet.
+
+    A no-op for coverage on the mirroring half: none of these keys are ever
+    present in a coverage call's collected_fields. kb_answers_given still
+    accumulates for coverage (it has diversions too), but nothing reads it
+    outside the renewal transfer packet.
+    """
+    known = getattr(state, "collected_fields", None) or {}
+    for field_name in _RENEWAL_MIRRORED_FIELDS:
+        if field_name in known and hasattr(state, field_name):
+            setattr(state, field_name, known[field_name])
+
+    if governing is not None and getattr(governing.chunk, "intent", None) is not None:
+        kb_answers = getattr(state, "kb_answers_given", None)
+        if kb_answers is not None:
+            kb_answers.append({
+                "rule_id": governing.chunk.id,
+                "intent": governing.chunk.intent,
+                "reply": reply_text,
+            })
 
 
 _DIGIT_RE = re.compile(r"\d+")
@@ -978,6 +1051,7 @@ class Engine:
         _apply_identity_derivation(valid, state)
         _apply_field_defaults(governing, valid, state)
         state.collected_fields.update(valid["extracted_fields"])
+        _sync_renewal_state(state, governing, reply_text)
 
         question = _extract_question(reply_text)
         if question:
