@@ -16,6 +16,23 @@ class Chunk:
                  governs a turn the REFERENCE list is emptied, so there is no
                  second rule for the model to splice a sentence out of.
       source     seed (hand-authored) | learned (written by the consolidator).
+    tier       a campaign's own answer tier (e.g. the renewal KB's T1-T4), or
+               None for campaigns with no tier concept. Purely descriptive
+               here — a tier's actual behaviour (priority/transfer/cacheable)
+               is a lookup against that campaign's own behaviour table, not
+               anything this dataclass interprets.
+    verbatim   True if `text` is spoken exactly as written, with no slot
+               substitution and no case-record fill. A verbatim rule's text
+               must contain no bracket, placeholder, or meta-instruction — if
+               it needs any of those to be spoken correctly, it is not
+               verbatim.
+    slots      [bracketed] tokens in `text` that get substituted from campaign
+               config at serve time (e.g. "clinic name"). Empty for a
+               verbatim rule.
+    requires_case_fields   case-record fields `text`'s leading [bracketed]
+               instruction reads before falling back to the spoken clause
+               after it. That bracket is an instruction, never speech, and
+               must never reach TTS as written.
     """
 
     id: str
@@ -33,11 +50,18 @@ class Chunk:
     #
     # Empty means fall back to `text`.
     cue: str = ""
+    # The raw phrasings `cue` was built FROM (source column split on "·"), kept
+    # verbatim alongside the joined cue so nothing is lost in the join.
+    cue_variants: list[str] = field(default_factory=list)
     intent: str | None = None
     priority: str = "normal"  # critical, high, normal, low
     terminal: bool = False
     exclusive: bool = False
     source: str = "seed"
     learned_kind: str | None = None
+    tier: str | None = None
+    verbatim: bool = False
+    slots: list[str] = field(default_factory=list)
+    requires_case_fields: list[str] = field(default_factory=list)
     # Provenance extras only; never queried.
     tags: dict = field(default_factory=dict)

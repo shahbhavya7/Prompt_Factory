@@ -1,0 +1,48 @@
+# Isolated stack for building/tuning the renewal KB (feat/renewal-kb-ingestion).
+#
+# Deliberately a SEPARATE compose file, not a service added to docker-compose.yml:
+# sharing one Postgres across branches already caused a volume leak once. Every
+# name below is explicit rather than left to Compose's project-name-derived
+# default, because that default is exactly what leaked last time — two compose
+# files in the same directory produce the same project name, and an unnamed
+# volume/container then collides silently.
+#
+# Pinned to the SAME pgvector tag as docker-compose.yml: a different version
+# changes index and distance behaviour, and every threshold measured against
+# this DB would then be measured against something else entirely.
+#
+# `name:` below is load-bearing, not decorative: without it, Compose derives
+# the project name from the current directory, which is the SAME directory
+# docker-compose.yml lives in — so both files would resolve to project
+# "promptfactory" and, because both define a service literally called `db`,
+# Compose treats them as the SAME service slot and "recreates" one into the
+# other. Confirmed live while building this: `docker compose -f
+# docker-compose.kb.yml up` destroyed and rewrote the main stack's running
+# `promptfactory-db-1` container. An explicit, distinct project name is what
+# actually prevents that — container_name/volume name alone were not enough.
+name: sace-kb
+
+services:
+  db:
+    container_name: sace-kb-db
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sace
+      POSTGRES_PASSWORD: sace
+      POSTGRES_DB: sace_kb
+    ports:
+      # 5433, deliberately not 5432 or 5434 — the shared stack (docker-compose.yml)
+      # runs on 5434, so both can be up at the same time.
+      - "5433:5432"
+    volumes:
+      - sace-kb-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sace -d sace_kb"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  sace-kb-pgdata:
+    name: sace-kb-pgdata

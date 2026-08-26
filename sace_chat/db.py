@@ -22,6 +22,29 @@ DATABASE_URL = os.environ.get(
 )
 EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "384"))
 
+# Opt-in startup guard: entry points that must never touch anything but a
+# specific database (the isolated renewal-KB stack, docker-compose.kb.yml) set
+# SACE_EXPECTED_DB — see .env.kb — and get refused loudly here instead of
+# silently writing into whatever DATABASE_URL happened to be left in the shell.
+# Unset (the default, everywhere else in the app) makes this a no-op, so the
+# shared sace_chat database is never affected.
+_EXPECTED_DB = os.environ.get("SACE_EXPECTED_DB")
+
+
+def _db_name_from_url(url: str) -> str:
+    return url.rsplit("/", 1)[-1].split("?", 1)[0]
+
+
+if _EXPECTED_DB:
+    _actual_db = _db_name_from_url(DATABASE_URL)
+    if _actual_db != _EXPECTED_DB:
+        raise RuntimeError(
+            f"refusing to start: DATABASE_URL points at database {_actual_db!r}, "
+            f"but SACE_EXPECTED_DB requires {_EXPECTED_DB!r}. This usually means "
+            f"a stale DATABASE_URL is set in your shell, overriding .env.kb — "
+            f"unset it or fix .env.kb before rerunning."
+        )
+
 Base = declarative_base()
 
 
@@ -50,6 +73,10 @@ class ChunkRow(Base):
     source = Column(String, nullable=False, default="seed")  # seed | learned
     # policy | example | failure — set by the consolidator, provenance only.
     learned_kind = Column(String, nullable=True)
+
+    # A campaign's own answer tier (e.g. the renewal KB's T1-T4). Nullable and
+    # unused by the coverage campaign — see models.Chunk.tier.
+    tier = Column(String, nullable=True)
 
     embedding = Column(Vector(EMBEDDING_DIM), nullable=False)
 
@@ -150,6 +177,16 @@ class AnswerCacheRow(Base):
     governing_rule_id = Column(String, nullable=True, index=True)
     grounding_cosine = Column(Float, nullable=True)
 
+    # seed (loaded straight from a deterministic KB rule, no call ever produced
+    # it) | live (written by store(), from an actual validated turn). Existing
+    # rows all predate this column and are live by construction, hence the
+    # default — no backfill needed for them to keep behaving identically.
+    source = Column(String, nullable=False, default="live")
+    # A campaign's own answer tier (e.g. the renewal KB's T1-T4), carried over
+    # from the governing rule at store time. Nullable — a seed/live entry has
+    # no tier of its own; see models.Chunk.tier.
+    tier = Column(String, nullable=True)
+
     # The question that was PENDING when this reply was produced, fingerprinted
     # (see answer_cache.question_fingerprint). Most diversion replies end by
     # returning to whatever Maya had already asked, so the reply is only correct
@@ -249,6 +286,7 @@ def init_db():
             "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS exclusive BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS source VARCHAR NOT NULL DEFAULT 'seed'",
             "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS learned_kind VARCHAR",
+            "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tier VARCHAR",
         ):
             conn.execute(text(ddl))
 
@@ -284,6 +322,17 @@ def init_db():
         # of reading every row to check whether it qualifies. Same effect for
         # `intent IS NULL` (the general pool) as for a specific label.
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chunks_intent ON chunks (intent)"))
+
+        # A second campaign's own flat pool (e.g. the renewal KB), kept in a
+        # separate table rather than mixed into `chunks` by a campaign column —
+        # retrieval already scopes by intent per-turn, and a second campaign's
+        # intents are not guaranteed disjoint from the coverage campaign's.
+        # `LIKE chunks INCLUDING ALL` runs AFTER every ALTER TABLE chunks above,
+        # so a fresh chunks_renewal always matches chunks' current shape
+        # (columns, indexes, defaults) rather than some earlier version of it.
+        conn.execute(
+            text("CREATE TABLE IF NOT EXISTS chunks_renewal (LIKE chunks INCLUDING ALL)")
+        )
 
         # needs_review grew from "a log of rejections" into the human approval
         # queue, so the columns an approval needs to rebuild a Chunk (cue,
@@ -322,6 +371,17 @@ def init_db():
             text("CREATE INDEX IF NOT EXISTS ix_answer_cache_rule "
                  "ON answer_cache (governing_rule_id)")
         )
+        # Additive: existing rows all predate the source/tier split, and the
+        # column defaults (source='live') are exactly what those rows already
+        # are by construction, so no backfill is needed for them to keep
+        # behaving identically.
+        conn.execute(
+            text("ALTER TABLE answer_cache ADD COLUMN IF NOT EXISTS "
+                 "source VARCHAR NOT NULL DEFAULT 'live'")
+        )
+        conn.execute(
+            text("ALTER TABLE answer_cache ADD COLUMN IF NOT EXISTS tier VARCHAR")
+        )
         # Added after the first rows existed. The default matters: '' means "ends
         # on no question", which is the permissive value, so a pre-existing row
         # would become servable on ANY pending question — the exact mistake the
@@ -336,6 +396,17 @@ def init_db():
         conn.execute(
             text("CREATE INDEX IF NOT EXISTS ix_answer_cache_pending "
                  "ON answer_cache (pending_fingerprint)")
+        )
+
+        # A second campaign's reply cache — the chunks_renewal pattern above,
+        # applied to answer_cache. Never sits in the same table as the coverage
+        # campaign's cache: NEVER_CACHE_INTENTS/NEVER_CACHE_RULES are global
+        # safety refusals (dnc, abuse, medical_emergency, garbled_audio, ...)
+        # that must not depend on which campaign's rows happen to be present.
+        # Run AFTER every ALTER TABLE answer_cache above so a fresh
+        # answer_cache_renewal always matches its current shape.
+        conn.execute(
+            text("CREATE TABLE IF NOT EXISTS answer_cache_renewal (LIKE answer_cache INCLUDING ALL)")
         )
 
 
@@ -447,6 +518,7 @@ def insert_chunk(session, chunk, embedder, learned_kind=None, source=None):
         exclusive=bool(chunk.exclusive),
         source=source or ("learned" if learned_kind else chunk.source),
         learned_kind=learned_kind or chunk.learned_kind,
+        tier=chunk.tier,
         embedding=vec,
     )
     session.merge(row)

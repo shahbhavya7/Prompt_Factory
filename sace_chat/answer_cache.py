@@ -70,7 +70,7 @@ import uuid
 from sqlalchemy import text as sql_text
 
 from sace_chat.assemble import DEMO_PLACEHOLDERS
-from sace_chat.db import AnswerCacheRow, SessionLocal, check_embedding
+from sace_chat.db import SessionLocal, check_embedding
 
 # How close a caller's message must be to a stored question to reuse its reply.
 #
@@ -602,7 +602,8 @@ def record_hit(cache_id: str) -> None:
 
 def store(*, question: str, question_vec, reply: str, intent: str | None,
           governing_rule_id: str | None, grounding_cosine: float | None = None,
-          session_id: str | None = None, pending: str = "") -> str | None:
+          session_id: str | None = None, pending: str = "",
+          table: str = "answer_cache") -> str | None:
     """Persist one confirmed question->reply pair. Returns the row id, or None.
 
     Like record_hit, deliberately tolerant: caching is an optimisation, and a
@@ -650,7 +651,7 @@ def store(*, question: str, question_vec, reply: str, intent: str | None,
             existing = session.execute(
                 sql_text(
                     f"SELECT id, embedding <=> CAST(:q AS vector) AS distance "
-                    f"FROM answer_cache WHERE {where_intent} "
+                    f"FROM {table} WHERE {where_intent} "
                     f"  AND pending_fingerprint = :pending "
                     f"ORDER BY distance LIMIT 1"
                 ),
@@ -660,8 +661,8 @@ def store(*, question: str, question_vec, reply: str, intent: str | None,
             if existing is not None and (1.0 - float(existing.distance)) >= DEDUP_THRESHOLD:
                 session.execute(
                     sql_text(
-                        "UPDATE answer_cache SET reply = :r, question = :q, "
-                        "governing_rule_id = :g, grounding_cosine = :c WHERE id = :i"
+                        f"UPDATE {table} SET reply = :r, question = :q, "
+                        f"governing_rule_id = :g, grounding_cosine = :c WHERE id = :i"
                     ),
                     {"r": reply, "q": question, "g": governing_rule_id,
                      "c": grounding_cosine, "i": existing.id},
@@ -669,12 +670,26 @@ def store(*, question: str, question_vec, reply: str, intent: str | None,
                 session.commit()
                 return existing.id
 
-            session.add(AnswerCacheRow(
-                id=row_id, question=question, embedding=vec, reply=reply,
-                intent=intent, governing_rule_id=governing_rule_id,
-                grounding_cosine=grounding_cosine, source_session_id=session_id,
-                pending_fingerprint=pending,
-            ))
+            session.execute(
+                sql_text(
+                    f"INSERT INTO {table} "
+                    f"(id, question, embedding, reply, intent, governing_rule_id, "
+                    f" grounding_cosine, source_session_id, pending_fingerprint, "
+                    f" source, hit_count) "
+                    f"VALUES "
+                    f"(:id, :question, CAST(:embedding AS vector), :reply, :intent, "
+                    f" :governing_rule_id, :grounding_cosine, :source_session_id, "
+                    f" :pending_fingerprint, :source, 0)"
+                ),
+                {
+                    "id": row_id, "question": question, "embedding": str(list(vec)),
+                    "reply": reply, "intent": intent,
+                    "governing_rule_id": governing_rule_id,
+                    "grounding_cosine": grounding_cosine,
+                    "source_session_id": session_id, "pending_fingerprint": pending,
+                    "source": "live",
+                },
+            )
             session.commit()
         return row_id
     except Exception as exc:  # pragma: no cover - optimisation path
@@ -682,13 +697,13 @@ def store(*, question: str, question_vec, reply: str, intent: str | None,
         return None
 
 
-def invalidate_for_rule(rule_id: str) -> int:
+def invalidate_for_rule(rule_id: str, *, table: str = "answer_cache") -> int:
     """Drop every cached answer derived from one rule. Called when that rule
     changes, so an edited rule cannot keep serving its old wording forever."""
     try:
         with SessionLocal() as session:
             n = session.execute(
-                sql_text("DELETE FROM answer_cache WHERE governing_rule_id = :i"),
+                sql_text(f"DELETE FROM {table} WHERE governing_rule_id = :i"),
                 {"i": rule_id},
             ).rowcount
             session.commit()
@@ -719,19 +734,19 @@ def invalidate_for_intent(intent: str | None) -> int:
         return 0
 
 
-def stats() -> dict:
+def stats(*, table: str = "answer_cache") -> dict:
     with SessionLocal() as session:
         row = session.execute(sql_text(
-            "SELECT count(*) AS entries, COALESCE(sum(hit_count),0) AS hits "
-            "FROM answer_cache"
+            f"SELECT count(*) AS entries, COALESCE(sum(hit_count),0) AS hits "
+            f"FROM {table}"
         )).fetchone()
         return {"entries": int(row.entries), "hits": int(row.hits),
                 "threshold": CACHE_THRESHOLD,
                 "dedup_threshold": DEDUP_THRESHOLD, "enabled": _ENABLED}
 
 
-def clear() -> int:
+def clear(*, table: str = "answer_cache") -> int:
     with SessionLocal() as session:
-        n = session.execute(sql_text("DELETE FROM answer_cache")).rowcount
+        n = session.execute(sql_text(f"DELETE FROM {table}")).rowcount
         session.commit()
     return int(n or 0)

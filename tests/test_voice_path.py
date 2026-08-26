@@ -32,6 +32,10 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import kb_env
+
+kb_env.pin()
+
 from dotenv import load_dotenv
 
 load_dotenv()
