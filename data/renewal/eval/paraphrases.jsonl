@@ -1,0 +1,126 @@
+{"id": "kb_ltr_01", "tier": "T1", "intent": "the_letter", "canonical": "What is this form?/ What does this packet contain", "paraphrase": "What's this packet for?"}
+{"id": "kb_ltr_02", "tier": "T1", "intent": "the_letter", "canonical": "Do I have to do this?", "paraphrase": "Do I really need to do this?"}
+{"id": "kb_ltr_03", "tier": "T1", "intent": "the_letter", "canonical": "Why is only part of my family on this form?", "paraphrase": "Why isn't everyone in my family listed?"}
+{"id": "kb_ltr_04", "tier": "T1", "intent": "the_letter", "canonical": "I never got the form.", "paraphrase": "I never received the form."}
+{"id": "kb_ltr_04_b", "tier": "T1", "intent": "the_letter", "canonical": "I  got the form but lost it", "paraphrase": "I had the form but can't find it now."}
+{"id": "kb_ltr_05", "tier": "T1", "intent": "the_letter", "canonical": "I already sent it.", "paraphrase": "I already submitted it."}
+{"id": "kb_ltr_06", "tier": "T1", "intent": "the_letter", "canonical": "It's not in my language.", "paraphrase": "This isn't in my language."}
+{"id": "kb_ltr_07", "tier": "T1", "intent": "the_letter", "canonical": "Do I fill in the whole thing?", "paraphrase": "Do I have to complete the entire thing?"}
+{"id": "kb_ltr_08", "tier": "T2", "intent": "the_letter", "canonical": "Whose name is on this as my worker?", "paraphrase": "Who’s my case worker?"}
+{"id": "kb_due_01", "tier": "T2", "intent": "deadlines", "canonical": "When is this due?", "paraphrase": "When do I need to turn this in?"}
+{"id": "kb_due_02", "tier": "T1", "intent": "deadlines", "canonical": "What if I'm late?", "paraphrase": "What happens if I miss the deadline?"}
+{"id": "kb_due_03", "tier": "T3", "intent": "deadlines", "canonical": "How long do I have to fix it after my coverage stopped?", "paraphrase": "How long after losing coverage can I fix this?"}
+{"id": "kb_due_04", "tier": "T1", "intent": "deadlines", "canonical": "How long does it take once I send it?", "paraphrase": "How quickly will I get a response after sending it?"}
+{"id": "kb_due_05", "tier": "T1", "intent": "deadlines", "canonical": "How soon do I have to report changes later?", "paraphrase": "When should I report changes later on?"}
+{"id": "kb_due_06", "tier": "T2", "intent": "deadlines", "canonical": "The county asked me for something and I don't know what.", "paraphrase": "The county asked me for something, but I’m not sure what."}
+{"id": "kb_due_07", "tier": "T1", "intent": "deadlines", "canonical": "Can I get help with bills from before I applied?", "paraphrase": "Can I get help with past bills?"}
+{"id": "kb_adr_01", "tier": "T1", "intent": "address", "canonical": "I moved. What do I do?", "paraphrase": "I moved. What should I do now?"}
+{"id": "kb_adr_02", "tier": "T1", "intent": "address", "canonical": "I don't have an address.", "paraphrase": "I don’t have an address right now."}
+{"id": "kb_adr_03", "tier": "T1", "intent": "address", "canonical": "Which phone number should I give?", "paraphrase": "Which phone number should I use?"}
+{"id": "kb_adr_04", "tier": "T1", "intent": "address", "canonical": "Do I have to give an email?", "paraphrase": "Is it necessary to provide an email?"}
+{"id": "kb_adr_05", "tier": "T1", "intent": "address", "canonical": "Can you write to me in my language?", "paraphrase": "Can you send me the info in my language?"}
+{"id": "kb_adr_06", "tier": "T1", "intent": "address", "canonical": "How do you already have my information?", "paraphrase": "How did you get my personal info?"}
+{"id": "kb_adr_07", "tier": "T1", "intent": "address", "canonical": "Can I choose how you contact me?", "paraphrase": "Can I pick how you reach me?"}
+{"id": "kb_adr_08", "tier": "T1", "intent": "address", "canonical": "Am I deaf-accessible / can I get large print?", "paraphrase": "Can I get the information in larger text?"}
+{"id": "kb_adr_09", "tier": "T3", "intent": "address", "canonical": "Can I use the clinic as my mailing address?", "paraphrase": "Is it okay to use the clinic for my mail?"}
+{"id": "kb_hlp_01", "tier": "T1", "intent": "help", "canonical": "Can someone help me fill this in?", "paraphrase": "Can someone help me with this form?"}
+{"id": "kb_hlp_02", "tier": "T1", "intent": "help", "canonical": "Can someone else deal with this for me?", "paraphrase": "Can my friend take care of this for me?"}
+{"id": "kb_hlp_03", "tier": "T1", "intent": "help", "canonical": "Can you submit it for me?", "paraphrase": "Will you send this for me?"}
+{"id": "kb_hlp_04", "tier": "T3", "intent": "help", "canonical": "How do I change who represents me?", "paraphrase": "How can I change my representative?"}
+{"id": "kb_hlp_05", "tier": "T1", "intent": "help", "canonical": "Can I do this in person instead?", "paraphrase": "Can I just do this face-to-face?"}
+{"id": "kb_hlp_06", "tier": "T1", "intent": "help", "canonical": "Is there a cost for this help?", "paraphrase": "Is there any fee for this assistance?"}
+{"id": "kb_hh_01", "tier": "T1", "intent": "household", "canonical": "Who do I have to include?", "paraphrase": "Who needs to be listed?"}
+{"id": "kb_hh_02", "tier": "T1", "intent": "household", "canonical": "Do I include my boyfriend or my roommate?", "paraphrase": "Should I add my boyfriend or roommate?"}
+{"id": "kb_hh_03", "tier": "T1", "intent": "household", "canonical": "Someone claims me as a dependent. What do I do?", "paraphrase": "What should I do if someone claims me?"}
+{"id": "kb_hh_04", "tier": "T1", "intent": "household", "canonical": "My son moved out.", "paraphrase": "My son has moved out now."}
+{"id": "kb_hh_05", "tier": "T1", "intent": "household", "canonical": "I had a baby.", "paraphrase": "I just had a baby."}
+{"id": "kb_hh_06", "tier": "T1", "intent": "household", "canonical": "Does everyone have to live with me?", "paraphrase": "Does everyone have to stay in my house?"}
+{"id": "kb_hh_07", "tier": "T1", "intent": "household", "canonical": "Someone in my house wants to apply too.", "paraphrase": "Can someone else in my household apply too?"}
+{"id": "kb_hh_08", "tier": "T3", "intent": "household", "canonical": "Someone in my household died.", "paraphrase": "I had a death in my household."}
+{"id": "kb_hh_09", "tier": "T3", "intent": "household", "canonical": "Someone in my household is in jail.", "paraphrase": "One of my family members is in jail."}
+{"id": "kb_hh_10", "tier": "T1", "intent": "household", "canonical": "Does it matter if my kids are covered and I'm not?", "paraphrase": "Is it a problem if I'm not covered but my kids are?"}
+{"id": "kb_tax_01", "tier": "T1", "intent": "tax", "canonical": "I don't file taxes. Can I still get Medi-Cal?", "paraphrase": "Can I still get Medi-Cal if I don't do my taxes?"}
+{"id": "kb_tax_02", "tier": "T1", "intent": "tax", "canonical": "What is a primary tax filer?", "paraphrase": "What exactly does primary tax filer mean?"}
+{"id": "kb_tax_03", "tier": "T1", "intent": "tax", "canonical": "What does head of household mean?", "paraphrase": "What does it mean to be head of household?"}
+{"id": "kb_tax_04", "tier": "T1", "intent": "tax", "canonical": "Why do you need my tax information?", "paraphrase": "Why do you need my tax info for this?"}
+{"id": "kb_tax_05", "tier": "T3", "intent": "tax", "canonical": "My tax situation changed. Does that matter?", "paraphrase": "If my tax situation changed, should I be worried?"}
+{"id": "kb_tax_06", "tier": "T1", "intent": "tax", "canonical": "What is that box about using my tax returns to renew automatically?", "paraphrase": "What’s up with the box for renewing with tax returns?"}
+{"id": "kb_tax_07", "tier": "T1", "intent": "tax", "canonical": "Will Medi-Cal cost me money at tax time?", "paraphrase": "Will I end up paying extra taxes because of Medi-Cal?"}
+{"id": "kb_inc_01", "tier": "T1", "intent": "income", "canonical": "Do you want the amount before or after taxes?", "paraphrase": "Are you asking for my income before or after taxes?"}
+{"id": "kb_inc_02", "tier": "T1", "intent": "income", "canonical": "I get paid every two weeks. What do I put?", "paraphrase": "What do I report if I get paid biweekly?"}
+{"id": "kb_inc_03", "tier": "T1", "intent": "income", "canonical": "My hours change every week. What do I write?", "paraphrase": "My hours vary weekly, what should I note?"}
+{"id": "kb_inc_04", "tier": "T1", "intent": "income", "canonical": "I work for cash. I don't have pay stubs.", "paraphrase": "I get paid cash and don’t have pay stubs, what now?"}
+{"id": "kb_inc_05", "tier": "T1", "intent": "income", "canonical": "What counts as income?", "paraphrase": "What should I include as income?"}
+{"id": "kb_inc_06", "tier": "T3", "intent": "income", "canonical": "Does my child's SSI count? Does CalFresh count?", "paraphrase": "Do SSI and CalFresh count as part of my income?"}
+{"id": "kb_inc_07", "tier": "T1", "intent": "income", "canonical": "I just lost my job.", "paraphrase": "I just got laid off, what should I do?"}
+{"id": "kb_inc_08", "tier": "T1", "intent": "income", "canonical": "Do I report tips?", "paraphrase": "Should I include any tips I receive?"}
+{"id": "kb_inc_09", "tier": "T1", "intent": "income", "canonical": "Do I report money my family sends me?", "paraphrase": "Do I need to mention money my family sends me?"}
+{"id": "kb_inc_10", "tier": "T1", "intent": "income", "canonical": "What proof of income do I need to send?", "paraphrase": "What kind of income proof do I need to provide?"}
+{"id": "kb_inc_11", "tier": "T1", "intent": "income", "canonical": "My income is on there but it's wrong.", "paraphrase": "What if the income listed is wrong?"}
+{"id": "kb_inc_12", "tier": "T3", "intent": "income", "canonical": "Do I make too much for Medi-Cal?", "paraphrase": "Could I be earning too much for Medi-Cal?"}
+{"id": "kb_inc_13", "tier": "T3", "intent": "income", "canonical": "The county says my income doesn't match. Why?", "paraphrase": "What’s the issue with my income they mentioned?"}
+{"id": "kb_inc_14", "tier": "T1", "intent": "income", "canonical": "Do I report my husband's income if he's not applying?", "paraphrase": "Do I need to include my husband's income even if he's not applying?"}
+{"id": "kb_exp_01", "tier": "T1", "intent": "deductions", "canonical": "Why would I tell you about my expenses?", "paraphrase": "Why do you need to know about my expenses?"}
+{"id": "kb_exp_02", "tier": "T1", "intent": "deductions", "canonical": "What kind of expenses count?", "paraphrase": "What expenses should I include?"}
+{"id": "kb_exp_03", "tier": "T1", "intent": "deductions", "canonical": "What proof do I need for expenses?", "paraphrase": "What do I need to prove my expenses?"}
+{"id": "kb_exp_04", "tier": "T3", "intent": "deductions", "canonical": "I'm self-employed. What can I deduct?", "paraphrase": "As a self-employed person, what can I claim?"}
+{"id": "kb_exp_05", "tier": "T1", "intent": "deductions", "canonical": "Do I have to fill this part in?", "paraphrase": "Is this section mandatory for me to complete?"}
+{"id": "kb_cov_01", "tier": "T1", "intent": "other_coverage", "canonical": "I have insurance from my job. Do I still qualify?", "paraphrase": "If I have employer insurance, am I still eligible?"}
+{"id": "kb_cov_02", "tier": "T1", "intent": "other_coverage", "canonical": "Do I have to report my dental plan?", "paraphrase": "Do I need to mention my dental coverage?"}
+{"id": "kb_cov_03", "tier": "T1", "intent": "other_coverage", "canonical": "I have Medicare. Do I still need this?", "paraphrase": "Do I still need Medi-Cal if I have Medicare?"}
+{"id": "kb_cov_04", "tier": "T1", "intent": "other_coverage", "canonical": "I don't know which parts of Medicare I have.", "paraphrase": "I’m unsure about my Medicare parts, what should I do?"}
+{"id": "kb_cov_05", "tier": "T1", "intent": "other_coverage", "canonical": "My other insurance is ending.", "paraphrase": "I'm about to lose my other insurance, what should I know?"}
+{"id": "kb_cov_06", "tier": "T3", "intent": "other_coverage", "canonical": "Should I drop my other insurance?", "paraphrase": "Should I cancel my other insurance in favor of Medi-Cal?"}
+{"id": "kb_cov_07", "tier": "T3", "intent": "other_coverage", "canonical": "Someone in my family is in a nursing home.", "paraphrase": "I have a family member in a nursing home, what does that mean?"}
+{"id": "kb_chg_01", "tier": "T1", "intent": "changes", "canonical": "I'm pregnant.", "paraphrase": "I'm expecting a baby, what do I do next?"}
+{"id": "kb_chg_02", "tier": "T1", "intent": "changes", "canonical": "I was in foster care.", "paraphrase": "I grew up in foster care, how does that affect me?"}
+{"id": "kb_chg_03", "tier": "T1", "intent": "changes", "canonical": "My child turned nineteen.", "paraphrase": "My kid just turned nineteen, what happens now?"}
+{"id": "kb_chg_04", "tier": "T1", "intent": "changes", "canonical": "Someone in my house has a disability.", "paraphrase": "There’s a person with a disability in my home, what’s next?"}
+{"id": "kb_chg_05", "tier": "T1", "intent": "changes", "canonical": "Can I get help with in-home care?", "paraphrase": "Is there any support available for in-home care?"}
+{"id": "kb_chg_06", "tier": "T1", "intent": "changes", "canonical": "Can my kids get check-ups and dental?", "paraphrase": "Will my children get check-ups and dental care?"}
+{"id": "kb_chg_07", "tier": "T1", "intent": "changes", "canonical": "Can I get help with food?", "paraphrase": "Can you help me get some food?"}
+{"id": "kb_chg_08", "tier": "T3", "intent": "changes", "canonical": "Someone had a transplant / is on dialysis.", "paraphrase": "Is there someone who had a transplant or does dialysis?"}
+{"id": "kb_sig_01", "tier": "T1", "intent": "signature", "canonical": "Do I have to sign it?", "paraphrase": "Do I need to put my name on this?"}
+{"id": "kb_sig_02", "tier": "T1", "intent": "signature", "canonical": "What does 'penalty of perjury' mean?", "paraphrase": "What does it mean to sign under penalty of perjury?"}
+{"id": "kb_sig_03", "tier": "T1", "intent": "signature", "canonical": "What if I get something wrong by accident?", "paraphrase": "What happens if I mess something up?"}
+{"id": "kb_sig_04", "tier": "T1", "intent": "signature", "canonical": "Can someone sign for me?", "paraphrase": "Can someone else sign this for me?"}
+{"id": "kb_sig_05", "tier": "T1", "intent": "signature", "canonical": "Can I sign over the phone?", "paraphrase": "Can I sign this over the phone instead?"}
+{"id": "kb_sig_06", "tier": "T1", "intent": "signature", "canonical": "Are you recording this?", "paraphrase": "Are you recording this call right now?"}
+{"id": "kb_sig_07", "tier": "T3", "intent": "signature", "canonical": "What am I agreeing to if I let you represent me?", "paraphrase": "What does it mean if I let you represent me?"}
+{"id": "kb_sig_08", "tier": "T1", "intent": "signature", "canonical": "Can I change my mind later?", "paraphrase": "Can I back out of this later?"}
+{"id": "kb_snd_01", "tier": "T1", "intent": "submitting", "canonical": "How do I send this back?", "paraphrase": "What’s the best way to send this back?"}
+{"id": "kb_snd_02", "tier": "T1", "intent": "submitting", "canonical": "I don't have a computer.", "paraphrase": "I don't have a computer or the internet."}
+{"id": "kb_snd_03", "tier": "T1", "intent": "submitting", "canonical": "Do I have to send the papers with it?", "paraphrase": "Do I need to include the supporting documents?"}
+{"id": "kb_snd_04", "tier": "T1", "intent": "submitting", "canonical": "Do I have to do an interview?", "paraphrase": "Will I have to do an interview?"}
+{"id": "kb_snd_05", "tier": "T1", "intent": "submitting", "canonical": "What happens after I send it?", "paraphrase": "What’s next after I send it?"}
+{"id": "kb_snd_06", "tier": "T1", "intent": "submitting", "canonical": "Will I get a new card?", "paraphrase": "Am I getting a new benefits card?"}
+{"id": "kb_snd_07", "tier": "T1", "intent": "submitting", "canonical": "How do I get a replacement card?", "paraphrase": "How can I get a replacement for my card?"}
+{"id": "kb_snd_08", "tier": "T1", "intent": "submitting", "canonical": "What if they say no?", "paraphrase": "What if they tell me no?"}
+{"id": "kb_snd_09", "tier": "T1", "intent": "submitting", "canonical": "Can I get free legal help?", "paraphrase": "Can I find someone to help me legally for free?"}
+{"id": "kb_tru_01", "tier": "T1", "intent": "trust", "canonical": "Who is this?", "paraphrase": "Who am I talking to right now?"}
+{"id": "kb_tru_02", "tier": "T1", "intent": "trust", "canonical": "Are you a robot?", "paraphrase": "Am I talking to a real person?"}
+{"id": "kb_tru_03", "tier": "T1", "intent": "trust", "canonical": "How do I know this isn't a scam?", "paraphrase": "How can I be sure this is legit?"}
+{"id": "kb_tru_04", "tier": "T1", "intent": "trust", "canonical": "How did you get my number?", "paraphrase": "How did you find my phone number?"}
+{"id": "kb_tru_05", "tier": "T1", "intent": "trust", "canonical": "Are you going to ask me for money?", "paraphrase": "Are you gonna charge me for this?"}
+{"id": "kb_tru_06", "tier": "T1", "intent": "trust", "canonical": "Do you work for the government?", "paraphrase": "Are you with the government?"}
+{"id": "kb_tru_07", "tier": "T1", "intent": "trust", "canonical": "Who sees my information?", "paraphrase": "Who has access to my info?"}
+{"id": "kb_tru_08", "tier": "T1", "intent": "trust", "canonical": "Do you have my Social Security number?", "paraphrase": "Do you already have my Social Security number?"}
+{"id": "kb_tru_09", "tier": "T1", "intent": "trust", "canonical": "Stop calling me.", "paraphrase": "Please don't call me anymore."}
+{"id": "kb_tru_10", "tier": "T1", "intent": "trust", "canonical": "Can I call you back?", "paraphrase": "Can I get back to you later?"}
+{"id": "kb_tru_11", "tier": "T3", "intent": "trust", "canonical": "Someone already called me about this and I gave them information.", "paraphrase": "I already gave my info to someone else."}
+{"id": "kb_imm_01", "tier": "T4", "intent": "immigration", "canonical": "Will this affect my green card or my status?", "paraphrase": "Will this change hurt my green card?"}
+{"id": "kb_imm_02", "tier": "T4", "intent": "immigration", "canonical": "Will you tell immigration about me?", "paraphrase": "Are you going to report me to immigration?"}
+{"id": "kb_imm_03", "tier": "T4", "intent": "immigration", "canonical": "Can I apply if I don't have papers?", "paraphrase": "Can I apply without any legal papers?"}
+{"id": "kb_imm_04", "tier": "T4", "intent": "immigration", "canonical": "My kids are citizens but I'm not.", "paraphrase": "Only my kids are citizens, what about me?"}
+{"id": "kb_imm_05", "tier": "T4", "intent": "immigration", "canonical": "My status changed this year. What do I put?", "paraphrase": "I had a status change this year; what should I say?"}
+{"id": "kb_imm_06", "tier": "T4", "intent": "immigration", "canonical": "Is it safe for me to fill this in?", "paraphrase": "Is it okay for me to fill this out?"}
+{"id": "kb_elg_01", "tier": "T3", "intent": "eligibility", "canonical": "Will I qualify?", "paraphrase": "Am I going to qualify for this?"}
+{"id": "kb_elg_02", "tier": "T3", "intent": "eligibility", "canonical": "What's the income limit?", "paraphrase": "What’s the cap on income for this?"}
+{"id": "kb_elg_03", "tier": "T3", "intent": "eligibility", "canonical": "Will I have to pay a share of cost?", "paraphrase": "Will I need to pay anything monthly?"}
+{"id": "kb_elg_04", "tier": "T3", "intent": "eligibility", "canonical": "Why did my coverage change to emergency only?", "paraphrase": "Why is my coverage now just for emergencies?"}
+{"id": "kb_elg_05", "tier": "T3", "intent": "eligibility", "canonical": "Should I apply for Covered California instead?", "paraphrase": "Should I look into Covered California instead?"}
+{"id": "kb_elg_06", "tier": "T3", "intent": "eligibility", "canonical": "How much will my medicine cost?", "paraphrase": "What’s the price for my meds going to be?"}
+{"id": "kb_dis_01", "tier": "T4", "intent": "distress", "canonical": "I can't afford my medication.", "paraphrase": "I can't pay for my meds right now."}
+{"id": "kb_dis_02", "tier": "T4", "intent": "distress", "canonical": "I'm sick right now / something is wrong.", "paraphrase": "I'm not feeling well and need help."}
+{"id": "kb_dis_03", "tier": "T4", "intent": "distress", "canonical": "Patient discloses abuse or being unsafe.", "paraphrase": "I feel unsafe at home and need support."}
+{"id": "kb_dis_04", "tier": "T4", "intent": "distress", "canonical": "Patient expresses hopelessness or self-harm.", "paraphrase": "I feel really down and don’t know what to do."}

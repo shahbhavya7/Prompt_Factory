@@ -133,6 +133,15 @@ DEDUP_THRESHOLD = float(os.environ.get("SACE_CACHE_DEDUP_THRESHOLD", "0.93"))
 # safety rule survives someone flipping `terminal` off on a rule by mistake.
 NEVER_CACHE_INTENTS = frozenset({"dnc", "abuse", "complaint_escalation"})
 
+# Tiers that must never be cached, in ANY campaign that uses a `tier` column
+# (renewal's T2/T4 today). T2 is this caller's own case record — replaying it
+# asserts a stranger's data back at someone; T4 is immigration/enforcement and
+# self-harm/distress, where a stale cached line is a safety failure, not a
+# UX one. Checked in both store() and lookup() — a row that reaches the table
+# by some future path (a migration, a bulk load bug) must still not be
+# servable, not just un-writable.
+NEVER_CACHE_TIERS = frozenset({"T2", "T4"})
+
 # THE STRUCTURAL RULE: a cacheable turn is an intent-routed diversion.
 #
 # This replaced a hand-maintained blocklist of rule ids, and the reason is
@@ -551,7 +560,7 @@ def lookup(conn, message_vec, intent: str | None, *, pending: str = "",
 
     row = conn.execute(
         sql_text(
-            f"SELECT id, question, reply, governing_rule_id, hit_count, "
+            f"SELECT id, question, reply, governing_rule_id, hit_count, tier, "
             f"       pending_fingerprint, "
             f"       embedding <=> CAST(:q AS vector) AS distance "
             f"FROM {table} WHERE {where_intent} "
@@ -567,6 +576,8 @@ def lookup(conn, message_vec, intent: str | None, *, pending: str = "",
     if similarity < CACHE_THRESHOLD:
         return None
     if row.governing_rule_id in NEVER_CACHE_RULES:
+        return None
+    if row.tier in NEVER_CACHE_TIERS:
         return None
     return {
         "id": row.id,
@@ -602,7 +613,7 @@ def record_hit(cache_id: str) -> None:
 
 def store(*, question: str, question_vec, reply: str, intent: str | None,
           governing_rule_id: str | None, grounding_cosine: float | None = None,
-          session_id: str | None = None, pending: str = "",
+          session_id: str | None = None, pending: str = "", tier: str | None = None,
           table: str = "answer_cache") -> str | None:
     """Persist one confirmed question->reply pair. Returns the row id, or None.
 
@@ -616,6 +627,9 @@ def store(*, question: str, question_vec, reply: str, intent: str | None,
     # lookup). Only the never-cache guards are enforced here.
     if (intent or "") in NEVER_CACHE_INTENTS or governing_rule_id in NEVER_CACHE_RULES:
         print(f"[cache] refusing to store {governing_rule_id} (never-cache)")
+        return None
+    if tier in NEVER_CACHE_TIERS:
+        print(f"[cache] refusing to store {governing_rule_id} (never-cache tier {tier})")
         return None
     try:
         vec = check_embedding(question_vec, chunk_id="cache-entry")
@@ -662,10 +676,11 @@ def store(*, question: str, question_vec, reply: str, intent: str | None,
                 session.execute(
                     sql_text(
                         f"UPDATE {table} SET reply = :r, question = :q, "
-                        f"governing_rule_id = :g, grounding_cosine = :c WHERE id = :i"
+                        f"governing_rule_id = :g, grounding_cosine = :c, tier = :t "
+                        f"WHERE id = :i"
                     ),
                     {"r": reply, "q": question, "g": governing_rule_id,
-                     "c": grounding_cosine, "i": existing.id},
+                     "c": grounding_cosine, "t": tier, "i": existing.id},
                 )
                 session.commit()
                 return existing.id
@@ -675,11 +690,11 @@ def store(*, question: str, question_vec, reply: str, intent: str | None,
                     f"INSERT INTO {table} "
                     f"(id, question, embedding, reply, intent, governing_rule_id, "
                     f" grounding_cosine, source_session_id, pending_fingerprint, "
-                    f" source, hit_count) "
+                    f" source, tier, hit_count) "
                     f"VALUES "
                     f"(:id, :question, CAST(:embedding AS vector), :reply, :intent, "
                     f" :governing_rule_id, :grounding_cosine, :source_session_id, "
-                    f" :pending_fingerprint, :source, 0)"
+                    f" :pending_fingerprint, :source, :tier, 0)"
                 ),
                 {
                     "id": row_id, "question": question, "embedding": str(list(vec)),
@@ -687,7 +702,7 @@ def store(*, question: str, question_vec, reply: str, intent: str | None,
                     "governing_rule_id": governing_rule_id,
                     "grounding_cosine": grounding_cosine,
                     "source_session_id": session_id, "pending_fingerprint": pending,
-                    "source": "live",
+                    "source": "live", "tier": tier,
                 },
             )
             session.commit()

@@ -499,15 +499,22 @@ def record_call_transcript(session_id, source, transcript, turn_count, learning_
     return row_id
 
 
-def insert_chunk(session, chunk, embedder, learned_kind=None, source=None):
+def insert_chunk(session, chunk, embedder, learned_kind=None, source=None,
+                  table="chunks", embedding=None):
     """The single insert path, shared by load_kb.py and consolidator.py, so the
     two can never disagree about which columns get set.
 
     The embedding comes from the CUE, not the rule text — see models.Chunk.cue.
+    Pass a precomputed `embedding` to skip the per-row embed call entirely —
+    a bulk loader embedding many chunks at once should batch them itself
+    (see embeddings.embed_many) rather than pay one round-trip per row here.
     """
     cue = (chunk.cue or "").strip() or chunk.text
-    vec = check_embedding(embedder.embed(cue), chunk_id=chunk.id)
-    row = ChunkRow(
+    vec = check_embedding(
+        embedding if embedding is not None else embedder.embed(cue),
+        chunk_id=chunk.id,
+    )
+    fields = dict(
         id=chunk.id,
         title=chunk.title,
         text=chunk.text,
@@ -519,7 +526,31 @@ def insert_chunk(session, chunk, embedder, learned_kind=None, source=None):
         source=source or ("learned" if learned_kind else chunk.source),
         learned_kind=learned_kind or chunk.learned_kind,
         tier=chunk.tier,
-        embedding=vec,
     )
-    session.merge(row)
-    return row
+    if table == "chunks":
+        row = ChunkRow(embedding=vec, **fields)
+        session.merge(row)
+        return row
+
+    # A second campaign's own pool (e.g. chunks_renewal) — same shape (LIKE
+    # chunks INCLUDING ALL) but not an ORM-mapped class, so this goes through
+    # raw SQL. ON CONFLICT (id) mirrors session.merge()'s upsert-by-primary-key
+    # semantics above.
+    session.execute(
+        text(
+            f"INSERT INTO {table} "
+            f"(id, title, text, cue, intent, priority, terminal, exclusive, "
+            f" source, learned_kind, tier, embedding) "
+            f"VALUES "
+            f"(:id, :title, :text, :cue, :intent, :priority, :terminal, :exclusive, "
+            f" :source, :learned_kind, :tier, CAST(:embedding AS vector)) "
+            f"ON CONFLICT (id) DO UPDATE SET "
+            f"  title=EXCLUDED.title, text=EXCLUDED.text, cue=EXCLUDED.cue, "
+            f"  intent=EXCLUDED.intent, priority=EXCLUDED.priority, "
+            f"  terminal=EXCLUDED.terminal, exclusive=EXCLUDED.exclusive, "
+            f"  source=EXCLUDED.source, learned_kind=EXCLUDED.learned_kind, "
+            f"  tier=EXCLUDED.tier, embedding=EXCLUDED.embedding"
+        ),
+        {**fields, "embedding": str(list(vec))},
+    )
+    return fields
