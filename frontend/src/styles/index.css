@@ -987,3 +987,66 @@ button {
   font-weight: 500;
   cursor: help;
 }
+
+/* ── call from this device ──────────────────────────────────────────────────
+   The browser-as-caller panel (components/PhoneCall.jsx). Sized for a phone
+   first: the whole point of this control is that it is used on a small screen
+   held in one hand, so the buttons are touch targets rather than the compact
+   desktop controls used elsewhere. */
+.phone-call {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 10px;
+  padding: var(--space-3, 12px);
+  margin-bottom: var(--space-3, 12px);
+}
+
+.phone-call header h2 {
+  font-size: 1.05rem;
+  margin: 0 0 0.25rem;
+}
+
+.phone-call .hint {
+  font-size: 0.85rem;
+  opacity: 0.7;
+  margin: 0 0 0.75rem;
+}
+
+.phone-call button {
+  min-height: 44px;      /* the iOS touch-target minimum, not a round number */
+  padding: 0 1.1rem;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.phone-call-live {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.phone-call .live-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #35c46a;
+  box-shadow: 0 0 0 0 rgba(53, 196, 106, 0.7);
+  animation: phone-call-pulse 1.8s infinite;
+}
+
+@keyframes phone-call-pulse {
+  70% { box-shadow: 0 0 0 8px rgba(53, 196, 106, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(53, 196, 106, 0); }
+}
+
+/* Respect a user who has asked the OS for less motion — the dot still reads as
+   "live" from its colour alone. */
+@media (prefers-reduced-motion: reduce) {
+  .phone-call .live-dot { animation: none; }
+}
+
+.phone-call .error {
+  color: #ff6b6b;
+  font-size: 0.85rem;
+  margin: 0.6rem 0 0;
+}

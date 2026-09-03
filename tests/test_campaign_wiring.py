@@ -71,8 +71,12 @@ def main():
     record("B2. renewal points at chunks_renewal / answer_cache_renewal",
            renewal.chunks_table == "chunks_renewal" and renewal.cache_table == "answer_cache_renewal",
            f"chunks_table={renewal.chunks_table} cache_table={renewal.cache_table}")
-    record("B3. renewal has 16-topic intent exemplars",
-           len(renewal.intent_exemplars) == 16, f"{len(renewal.intent_exemplars)} topics")
+    # 26 topics since the patient-experience review pass (was 16). Pinned to the
+    # exact number rather than ">= 1": this is the count the KB build asserts
+    # too, so the two moving together is the signal that a sheet change was
+    # deliberate rather than a silently re-shaped ingest.
+    record("B3. renewal has 26-topic intent exemplars",
+           len(renewal.intent_exemplars) == 26, f"{len(renewal.intent_exemplars)} topics")
     record("B4. every renewal rule's intent is in valid_intents",
            all(r.intent in renewal.valid_intents for r in RENEWAL_RULES),
            f"valid_intents={sorted(renewal.valid_intents)}")

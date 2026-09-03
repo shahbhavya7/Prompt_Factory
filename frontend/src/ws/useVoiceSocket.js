@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 
-const WS_URL = import.meta.env.VITE_VOICE_WS_URL || "ws://localhost:8765";
+// Derived from the page's own origin, not hardcoded to localhost. Two things
+// break otherwise once the dashboard is reachable from a phone: "localhost" is
+// the phone rather than the machine running the agent, and a ws:// socket on an
+// https:// page is blocked as mixed content. Taking the scheme from the page
+// makes it wss:// exactly when it has to be, and vite.config.js proxies /ws to
+// the agent's broadcast on :8765.
+const WS_URL =
+  import.meta.env.VITE_VOICE_WS_URL ||
+  `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws`;
 const RECONNECT_DELAY_MS = 2000;
 
 /** Connection to voice_agent.py's spectator broadcast.

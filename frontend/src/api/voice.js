@@ -10,7 +10,12 @@
  * CALL and runs the learning loop while leaving the agent up for the next one.
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+// Same-origin by default, proxied to :8000 by vite.config.js. It used to point
+// straight at http://localhost:8000, which is correct only while the browser
+// and the API are the same machine — the moment the dashboard is opened on a
+// phone through a tunnel, "localhost" is the PHONE. Relative means "wherever
+// this page came from", which is right in both cases.
+const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 
 async function request(path, options) {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -43,4 +48,14 @@ export function startAgent() {
 
 export function stopAgent() {
   return request("/voice/stop", { method: "POST" });
+}
+
+/** Mint a LiveKit token AND dispatch the agent into a fresh room, so this
+ *  browser can join the call with its own microphone.
+ *
+ *  Both halves happen server-side in one request on purpose: the worker uses
+ *  explicit dispatch, so a token alone would put the caller in an empty room.
+ *  See api/main.py's /voice/join. */
+export function joinCall() {
+  return request("/voice/join", { method: "POST" });
 }

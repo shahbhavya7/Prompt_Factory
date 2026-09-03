@@ -66,6 +66,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from dataclasses import dataclass
 
 from sqlalchemy import text as sql_text
 
@@ -229,7 +230,59 @@ NEVER_CACHE_RULES = frozenset({
     "special_garbled_audio", "special_frustration",
 })
 
+# ───────────────────────────── the serve decision ────────────────────────────
+#
+# WHY THIS IS A DATACLASS AND NOT THREE MODULE CONSTANTS.
+#
+# scripts/measure_cache_bar_renewal.py measures this campaign's real cosine
+# behaviour against held-out paraphrases and reports the bar that produces zero
+# wrong serves. Until this existed, it reported it into
+# data/renewal/eval/cache_bar.json and NOTHING READ THE FILE: lookup() served on
+# a single global threshold with no margin and no tier check, so the measurement
+# was decorative and the safety property it demonstrated was not in force.
+#
+# Measured on the 126-paraphrase run that produced that file: at margin 0.0 the
+# decision made 1 false serve and 1 CROSS-TIER serve; at margin 0.02, zero of
+# both. A cross-tier serve is the one that matters — it answers a T3 question
+# ("will I qualify?", whose only correct reply is a handoff) with a confident T1
+# fixed answer, or the reverse. That is not a stale-cache annoyance; it is Maya
+# stating something she is explicitly forbidden to state.
+#
+# So the bar travels WITH the campaign (see campaign.CampaignConfig.cache_bar),
+# is loaded from the measured file rather than retyped, and the default below
+# reproduces the coverage campaign's existing behaviour exactly — margin 0, no
+# tier agreement — so adding this changes nothing for a campaign that has not
+# measured its own.
+@dataclass(frozen=True)
+class CacheBar:
+    """How close, and how much closer than the runner-up, a serve requires.
+
+    threshold   minimum cosine to the nearest stored question. On its own this
+                is a bar on "is anything here close?".
+    margin      how far the nearest must beat the SECOND nearest. This is a bar
+                on "is the answer unambiguous?", which is a different question
+                and the one a single threshold cannot ask. Two stored questions
+                nearly tied means the corpus does not actually distinguish them
+                at this phrasing, and serving either is a coin flip.
+    require_tier_agreement
+                refuse when the top two candidates come from different tiers.
+                Disagreement means the neighbourhood straddles a routing
+                boundary — answer-directly vs hand-off — and the margin alone
+                may not separate them. Only meaningful for a campaign whose
+                rows carry a tier.
+    """
+
+    threshold: float
+    margin: float = 0.0
+    require_tier_agreement: bool = False
+
+
 _ENABLED = os.environ.get("SACE_CACHE", "on").strip().lower() not in {"off", "0", "false"}
+
+
+# The coverage campaign's historical behaviour, unchanged: one threshold, no
+# margin, no tier check. Used whenever a caller passes no bar of its own.
+DEFAULT_BAR = CacheBar(threshold=CACHE_THRESHOLD)
 
 
 def enabled() -> bool:
@@ -523,7 +576,7 @@ def is_cacheable(*, governing, outcome: str, regenerated: bool,
 
 
 def lookup(conn, message_vec, intent: str | None, *, pending: str = "",
-           table: str = "answer_cache"):
+           table: str = "answer_cache", bar: CacheBar | None = None):
     """Nearest cached answer in this intent's section, or None.
 
     `message_vec` MUST be a vector the caller already computed (retrieve.py's
@@ -536,7 +589,12 @@ def lookup(conn, message_vec, intent: str | None, *, pending: str = "",
     same question — or trails no question at all, stored as "" — are eligible.
     See the trailing-question gate above; this is the filter that lets a
     diversion reply be replayed without the script lurching.
+
+    `bar` is this campaign's measured serve decision (see CacheBar). Defaults
+    to DEFAULT_BAR, which is threshold-only — the behaviour this function had
+    before the margin and tier-agreement checks existed.
     """
+    bar = bar or DEFAULT_BAR
     if not _ENABLED:
         return None
     if (intent or "") in NEVER_CACHE_INTENTS:
@@ -558,7 +616,11 @@ def lookup(conn, message_vec, intent: str | None, *, pending: str = "",
     if intent is not None:
         params["intent"] = intent
 
-    row = conn.execute(
+    # LIMIT 2, not 1. The runner-up is not a candidate — it is the evidence
+    # for whether the winner is actually distinguishable. Fetching it is free
+    # (the same index scan, one more row) and it is the only way the margin and
+    # tier-agreement checks below can be asked at all.
+    rows = conn.execute(
         sql_text(
             f"SELECT id, question, reply, governing_rule_id, hit_count, tier, "
             f"       pending_fingerprint, "
@@ -566,20 +628,39 @@ def lookup(conn, message_vec, intent: str | None, *, pending: str = "",
             f"FROM {table} WHERE {where_intent} "
             f"  AND active = TRUE "
             f"  AND (pending_fingerprint = '' OR pending_fingerprint = :pending) "
-            f"ORDER BY distance LIMIT 1"
+            f"ORDER BY distance LIMIT 2"
         ),
         params,
-    ).fetchone()
+    ).fetchall()
 
-    if row is None:
+    if not rows:
         return None
+    row = rows[0]
     similarity = 1.0 - float(row.distance)
-    if similarity < CACHE_THRESHOLD:
+    if similarity < bar.threshold:
         return None
     if row.governing_rule_id in NEVER_CACHE_RULES:
         return None
     if row.tier in NEVER_CACHE_TIERS:
         return None
+
+    # The runner-up checks. Both are skipped when there IS no runner-up: a
+    # section holding one eligible row has nothing to be ambiguous with, and
+    # refusing there would disable the cache for every thinly-covered intent.
+    runner_up = rows[1] if len(rows) > 1 else None
+    if runner_up is not None:
+        # Same rule, different phrasing, is not ambiguity — it is the coverage
+        # the cache is supposed to accumulate (see DEDUP_THRESHOLD). Two rows
+        # for one rule sitting close together should serve, not block; only a
+        # near-tie between DIFFERENT rules is a coin flip.
+        if runner_up.governing_rule_id != row.governing_rule_id:
+            if bar.margin > 0.0:
+                second = 1.0 - float(runner_up.distance)
+                if (similarity - second) < bar.margin:
+                    return None
+            if bar.require_tier_agreement and runner_up.tier != row.tier:
+                return None
+
     return {
         "id": row.id,
         "question": row.question,

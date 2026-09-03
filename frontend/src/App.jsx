@@ -8,6 +8,7 @@ import MemoryLookupCard from "./components/MemoryLookupCard";
 import LearningFeed from "./components/LearningFeed";
 import CallControls from "./components/CallControls";
 import AudioToggles from "./components/AudioToggles";
+import PhoneCall from "./components/PhoneCall";
 import ReviewQueue from "./components/ReviewQueue";
 
 const initialState = {
@@ -274,6 +275,12 @@ export default function App() {
             onChange={handleAudioChange}
             disabled={!connected}
           />
+
+          {/* The only part of the dashboard that carries audio. Everything
+              above and below is a spectator view of what the agent did; this
+              makes the browser itself the caller, which is what lets the same
+              page be used from a phone. */}
+          <PhoneCall />
 
           <div className="chat-view">
             <TranscriptView turns={transcriptTurns} />

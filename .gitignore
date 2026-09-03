@@ -9,3 +9,5 @@ call_logs/
 frontend/node_modules/
 frontend/dist/
 logs/
+.venv/
+data/renewal/eval/*.bak126

@@ -39,6 +39,16 @@ class OpenAIEmbedder:
         api_key = os.environ.get("OPENAI_API_KEY") or os.environ["SACE_LLM_KEY"]
         self._client = OpenAI(api_key=api_key, timeout=timeout)
         self._model = model
+        # A SECOND, longer bound for batch calls. The 5s above exists so a
+        # stuck embed cannot hang a live turn, and for a one-string per-turn
+        # call that is the right number. It is the wrong number for the
+        # batches: the renewal campaign warms 313 intent exemplars in a single
+        # request at boot, and the KB loader sends 478. Measured on a cold
+        # connection that batch took 68s to complete because the 5s deadline
+        # kept firing and the client kept retrying underneath; warm, the same
+        # call takes 1.5s. A boot-time batch is not on anyone's critical path
+        # and has no caller to hang, so it gets room to finish instead.
+        self._batch_timeout = float(os.environ.get("SACE_EMBED_BATCH_TIMEOUT_S", "60"))
 
     def embed(self, text: str) -> list[float]:
         resp = self._client.embeddings.create(model=self._model, input=text)
@@ -50,7 +60,12 @@ class OpenAIEmbedder:
         needs — sequentially those are dozens of round-trips of dead air."""
         if not texts:
             return []
-        resp = self._client.embeddings.create(model=self._model, input=texts)
+        # One string is a per-turn call in disguise (retrieve embeds the
+        # caller's message and the pending question together), so it keeps the
+        # short deadline. Anything larger is a bulk call and gets the batch one.
+        client = (self._client if len(texts) <= 2
+                  else self._client.with_options(timeout=self._batch_timeout))
+        resp = client.embeddings.create(model=self._model, input=texts)
         # The API does not promise ordering, but it does return an index.
         return [item.embedding for item in sorted(resp.data, key=lambda d: d.index)]
 

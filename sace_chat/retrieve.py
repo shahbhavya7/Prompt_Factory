@@ -51,7 +51,19 @@ MESSAGE_WEIGHT = 0.9
 # this gate, "tell me a joke" can land on a phone-number repeat rule.
 GENERAL_MIN_SIMILARITY = 0.30
 
-_SELECT_COLS = "id, title, text, intent, priority, terminal, exclusive, source, learned_kind"
+# `tier` is in this list for a safety reason, not a cosmetic one. A campaign
+# with tiers (renewal's T1-T4) hard-blocks T2/T4 from the answer cache, and
+# that block is enforced in three places: the seed loader, answer_cache.store,
+# and answer_cache.lookup. The two runtime halves both read the tier off the
+# GOVERNING CHUNK — which retrieval builds from this SELECT. Leaving `tier`
+# out of it made chunk.tier None on every retrieved rule, so the tier a live
+# turn stored was always NULL and store()'s NEVER_CACHE_TIERS check could
+# never fire. Seed rows were protected (the loader sets tier explicitly); a
+# T2 answer generated during a live call was not, and T2 is this caller's own
+# case record. T4 happened to stay covered by its `critical` priority; T2 has
+# no second guard, so this column IS the guard.
+_SELECT_COLS = ("id, title, text, intent, priority, terminal, exclusive, "
+                "source, learned_kind, tier")
 
 # Priority ranks strictly ABOVE distance — but only inside an intent's own rule
 # set, never across the general pool. The two candidate sets differ in kind:
@@ -147,6 +159,7 @@ def _row_to_chunk(row) -> Chunk:
         exclusive=bool(row.exclusive),
         source=row.source or "seed",
         learned_kind=row.learned_kind,
+        tier=row.tier,
     )
 
 
@@ -283,6 +296,103 @@ def _fetch_general(conn, qvec, table: str, k: int = 2) -> list[Chunk]:
     return out
 
 
+# The floor for a cue-index match. Measured on 165 held-out paraphrases against
+# the 478-row index: when the nearest phrasing belonged to the RIGHT rule the
+# similarity ran 0.5164 - 0.9630 (median 0.8033); when it belonged to the wrong
+# one it ran up to 0.7677 (median 0.6687). Those bands overlap, so no threshold
+# separates right from wrong — and that is the correct conclusion, because the
+# five wrong ones were near-duplicate questions the KB itself does not
+# distinguish ("can you submit it for me" vs "can someone else deal with this").
+#
+# So this is NOT a correctness bar. It is an OFF-TOPIC bar: below it the caller
+# said something the KB has no rule for at all, and the honest reply is the
+# campaign's fallback line rather than the least-bad neighbour. Set just under
+# the weakest true match so nothing the KB genuinely covers is discarded.
+CUE_MIN_SIMILARITY = 0.50
+
+
+def _fetch_by_cue(conn, qvec, cue_table: str, chunks_table: str, k: int = 2) -> list[Chunk]:
+    """The nearest DISTINCT rules, ranked by their single best-matching phrasing.
+
+    One row per (rule, phrasing) is scanned; DISTINCT ON collapses to the best
+    phrasing per rule before the ranking, so a rule with eight phrasings does
+    not crowd out the runner-up simply by having more rows. What comes back is
+    a ranked list of RULES, which is what the caller actually needs.
+
+    Ranked by distance alone — deliberately no priority tie-break, unlike
+    _fetch_by_intent. There, every candidate handled the same situation and
+    priority was the only sensible discriminator. Here the candidates are the
+    whole KB, so promoting `critical` would make the T4 self-harm rule outrank
+    the correct answer on every ordinary turn — the same reasoning that keeps
+    priority out of the general pool. Measured, it is also unnecessary: all 10
+    T4 paraphrases already retrieve their own rule on distance alone.
+    """
+    rows = conn.execute(
+        text(
+            f"""
+            SELECT * FROM (
+                SELECT DISTINCT ON (v.rule_id)
+                       c.id, c.title, c.text, c.intent, c.priority, c.terminal,
+                       c.exclusive, c.source, c.learned_kind, c.tier,
+                       v.variant AS matched_variant,
+                       v.embedding <=> CAST(:qvec AS vector) AS distance
+                FROM {cue_table} v
+                JOIN {chunks_table} c ON c.id = v.rule_id
+                ORDER BY v.rule_id, v.embedding <=> CAST(:qvec AS vector)
+            ) AS best_per_rule
+            ORDER BY distance
+            LIMIT :k
+            """
+        ),
+        {"qvec": str(list(qvec)), "k": k},
+    ).fetchall()
+    out = []
+    for row in rows:
+        chunk = _row_to_chunk(row)
+        chunk.tags["distance"] = float(row.distance)
+        # Which phrasing actually matched — the single most useful thing to show
+        # when auditing why a rule governed a turn.
+        chunk.tags["matched_variant"] = row.matched_variant
+        out.append(chunk)
+    return out
+
+
+def _probe_cache(conn, result, state, message_vec, intent, cache_table, cache_bar):
+    """Ask the answer cache whether this turn is already answered.
+
+    Reuses `message_vec`, already computed for this turn — a miss therefore
+    costs one small extra query, not an embedding round-trip. See
+    answer_cache's module docstring for why that property is load-bearing.
+
+    `intent` is whichever label should scope the lookup: the governing rule's
+    on the cue path, the router's on the intent path. Never raises — an
+    optimisation must not be able to fail a turn.
+    """
+    try:
+        from sace_chat import answer_cache
+
+        # The pending question comes from `state`, which retrieve already has —
+        # so the gate costs nothing extra on the hot path.
+        hit = answer_cache.lookup(
+            conn, message_vec, intent,
+            pending=answer_cache.pending_fingerprint(state),
+            table=cache_table,
+            # This campaign's measured serve bar (threshold + margin + tier
+            # agreement). None falls back to answer_cache.DEFAULT_BAR, which is
+            # the threshold-only behaviour this had before.
+            bar=cache_bar,
+        )
+        if hit is not None:
+            result.cache_hit = hit
+            result.notes.append(
+                f"cache hit {hit['id']} (similarity {hit['similarity']:.3f}, "
+                f"pending {hit['pending_fingerprint'] or 'none'}) — "
+                f"reusing a confirmed reply, skipping the LLM"
+            )
+    except Exception as exc:
+        result.notes.append(f"cache lookup failed, using the full path: {exc}")
+
+
 def retrieve(
     conn,
     state: CallState,
@@ -292,8 +402,10 @@ def retrieve(
     router: IntentRouter | None = None,
     table: str = "chunks",
     cache_table: str = "answer_cache",
+    cue_table: str | None = None,
     precedence=None,
     use_cache: bool = True,
+    cache_bar=None,
 ) -> Retrieval:
     """`precedence` is an optional (intent, message) -> (intent, opt_out) hook,
     applied to the detected label before the rule is fetched — policy lives in
@@ -333,6 +445,59 @@ def retrieve(
             intent = effective
             result.intent = effective
 
+    # ── the cue-index path ─────────────────────────────────────────────────
+    #
+    # When the campaign has a per-variant cue index, the governing rule is
+    # chosen from it directly and the intent hop stops being a filter. Measured
+    # on 165 held-out renewal paraphrases: the intent hop picked the right rule
+    # 46.1% of the time and the cue index picks it 97.0% of the time, so the
+    # hop was not merely redundant — it was the dominant source of error. The
+    # router still runs (its label drives precedence, the never-cache lists and
+    # the UI), it just no longer gets to veto a rule it disagrees with.
+    #
+    # The ORDER matters and is the reverse of the intent path below. The cue
+    # fetch runs BEFORE the cache probe so the probe can be scoped by the
+    # GOVERNING RULE's intent rather than the router's guess — a 97%-accurate
+    # label instead of a 55%-accurate one. That costs one small extra query on
+    # a cache hit and buys back every hit the router would have mis-scoped into
+    # the wrong section.
+    if cue_table is not None:
+        candidates = _fetch_by_cue(conn, pool_vec, cue_table, table, k=2)
+        if not candidates:
+            result.notes.append("cue index is empty — no rule retrieved")
+            return result
+
+        best = candidates[0]
+        best_similarity = 1 - best.tags["distance"]
+        if best_similarity < CUE_MIN_SIMILARITY:
+            # Off-topic, not merely uncertain. See CUE_MIN_SIMILARITY: the
+            # caller said something this KB has no rule for, and the caller of
+            # this function answers that with the campaign's fallback line.
+            result.notes.append(
+                f"nearest cue {best.id} below the off-topic bar "
+                f"({best_similarity:.3f} < {CUE_MIN_SIMILARITY:.3f}); no rule retrieved"
+            )
+            return result
+
+        result.governing = RetrievedRule(best, "governing", best_similarity)
+        result.notes.append(
+            f"cue index: {best.id} via {best.tags.get('matched_variant')!r} "
+            f"(similarity {best_similarity:.3f})"
+        )
+        if not best.exclusive and len(candidates) > 1:
+            result.reference = [
+                RetrievedRule(candidates[1], "reference", 1 - candidates[1].tags["distance"])
+            ]
+        elif best.exclusive:
+            result.notes.append(f"{best.id} is exclusive; reference suppressed")
+
+        # The router's label is kept for the UI and precedence, but the rule's
+        # own intent is what scopes the cache — see the ORDER note above.
+        if use_cache and not result.opt_out:
+            _probe_cache(conn, result, state, message_vec, best.intent,
+                         cache_table, cache_bar)
+        return result
+
     # The cache probe goes HERE, and the position is deliberate on both sides:
     #
     #   * AFTER precedence, so a message that policy re-routed to dnc/abuse is
@@ -348,26 +513,7 @@ def retrieve(
     # It reuses `message_vec`, already computed above — a miss therefore costs
     # one small extra query, not an embedding round-trip. See answer_cache.
     if use_cache and not result.opt_out:
-        try:
-            from sace_chat import answer_cache
-
-            # The pending question comes from `state`, which retrieve already
-            # has — so the gate costs nothing extra on the hot path.
-            hit = answer_cache.lookup(
-                conn, message_vec, intent,
-                pending=answer_cache.pending_fingerprint(state),
-                table=cache_table,
-            )
-            if hit is not None:
-                result.cache_hit = hit
-                result.notes.append(
-                    f"cache hit {hit['id']} (similarity {hit['similarity']:.3f}, "
-                    f"pending {hit['pending_fingerprint'] or 'none'}) — "
-                    f"reusing a confirmed reply, skipping the LLM"
-                )
-        except Exception as exc:
-            # An optimisation must never be able to fail a turn.
-            result.notes.append(f"cache lookup failed, using the full path: {exc}")
+        _probe_cache(conn, result, state, message_vec, intent, cache_table, cache_bar)
 
     if intent is not None:
         chunk = _fetch_by_intent(conn, intent, pool_vec, table)

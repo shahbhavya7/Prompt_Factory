@@ -813,7 +813,8 @@ def build_engine() -> Engine:
         table=campaign.chunks_table, cache_table=campaign.cache_table,
         placeholders=campaign.placeholders, exemplars=campaign.intent_exemplars,
         valid_intents=campaign.valid_intents, fallback_reply=fallback_reply,
-        campaign_name=campaign.name,
+        campaign_name=campaign.name, cache_bar=campaign.cache_bar,
+        cue_table=campaign.cue_table, verbatim_bar=campaign.verbatim_bar,
     )
     # Exemplars embedded once here, at startup, so no turn pays for them.
     engine.router.warm()

@@ -330,6 +330,98 @@ def cached_decision(user_message: str, retrieval, elapsed_ms: float = 0.0) -> di
     }
 
 
+def verbatim_decision(user_message: str, retrieval, rule, elapsed_ms: float = 0.0) -> dict:
+    """The turn, spoken straight from the KB. Zero LLM calls, zero assembly.
+
+    WHY THIS EXISTS AND WHY IT IS SAFE HERE.
+
+    The renewal KB is not a set of facts to paraphrase — its "What Maya says"
+    column is the sentence Maya says, authored for speech ("spoken, short, no
+    lists") and reviewed against the form it cites. A rule whose text contains
+    no bracket, no slot and no case-record instruction is marked `verbatim` at
+    BUILD time (scripts/build_kb_renewal.py), which means it is already exactly
+    what should come out of TTS. Handing it to a model to reword adds a network
+    round-trip, a regeneration budget, a grounding check and a never-say risk,
+    in order to produce a worse version of a line that was already correct.
+
+    So when retrieval is confident and the governing rule is verbatim, the rule
+    IS the reply. This is the deterministic path: the same caller phrasing
+    yields byte-identical speech every time, and no generated text can state a
+    dollar amount, a date or an eligibility determination, because no text is
+    generated.
+
+    It differs from a cache hit in what it trusts. A cache hit replays
+    something a MODEL produced on an earlier turn and a grounding check
+    approved. This replays what a human AUTHOR wrote and a citation backs. The
+    cache is the faster path where it applies; this covers the confident turns
+    the cache has no row for, which measured at 72.1% of held-out paraphrases.
+
+    Gated by campaign.verbatim_bar — see that constant for the measurement.
+    """
+    governing = retrieval.governing
+    reply = rule.text
+    similarity = governing.similarity if governing else 0.0
+
+    # Same transparency contract as cached_decision: no payload was sent, but
+    # the turn must still show what produced it.
+    explain = (
+        f"VERBATIM RULE — no prompt was assembled and no model was called.\n"
+        f"The governing rule {rule.id} ({rule.tier}) is marked verbatim: its "
+        f"text is the authored spoken line, so it is spoken as written.\n"
+        f"Matched phrasing: {governing.chunk.tags.get('matched_variant') if governing else ''!r}\n"
+        f"Similarity to this turn: {similarity:.4f}\n"
+        f"Citation: {rule.tags.get('citation') or '(none)'}\n"
+        f"Spoken reply: {reply}"
+    )
+    messages = build_messages(explain, user_message)
+    prompt_sent = render_messages(messages)
+    ends = bool(governing and governing.chunk.terminal)
+    return {
+        "prompt_sent": prompt_sent,
+        "prompt_sent_tokens": 0,
+        "llm_messages": messages,
+        "sent_log": [{"prompt_sent": prompt_sent, "messages": messages, "tokens": 0}],
+        "llm_calls": 0,
+        "caller_message": user_message,
+        "assembled_prompt": "",
+        "assembled_prompt_tokens": 0,
+        "monolith_tokens": MONOLITH_TOKENS,
+        "saved_pct": 100.0,
+        "elapsed_ms": elapsed_ms,
+        "turn_json": {
+            "intent": retrieval.intent or "none",
+            "reply": reply,
+            "call_should_end": ends,
+            "extracted_fields": {},
+        },
+        "raw_llm_output": "",
+        "notes": list(retrieval.notes),
+        # Its own outcome, not "grounded" and not "cached": this reply was
+        # never generated, so it was never grounded, and it was never stored,
+        # so it was never cached. Naming it honestly keeps the dashboard's
+        # outcome counts meaningful.
+        "outcome": "verbatim",
+        "grounded": True,
+        "spliced": False,
+        "regenerated": False,
+        "governing_cosine": similarity,
+        "grounding_threshold": GROUNDING_THRESHOLD,
+        "scores": {},
+        "intent": retrieval.intent,
+        "intent_similarity": retrieval.intent_similarity,
+        "intent_ranked": retrieval.intent_ranked,
+        "query_text": retrieval.query_text,
+        "governing": _rule_debug(governing, {}) if governing else None,
+        "reference": [],
+        "call_should_end": ends,
+        "extracted_fields": {},
+        "asked_question": _extract_question(reply),
+        "retrieval": retrieval,
+        "cache_hit": None,
+        "verbatim_rule_id": rule.id,
+    }
+
+
 def question_key(question: str) -> str:
     """Identity of a question for dedup.
 
@@ -347,7 +439,8 @@ class Engine:
     def __init__(self, stable_core, rules=None, embedder=None, manager=None, llm=None,
                  monolith_text=None, table="chunks", chunks=None,
                  cache_table="answer_cache", placeholders=None, exemplars=None,
-                 valid_intents=None, fallback_reply=None, campaign_name=None):
+                 valid_intents=None, fallback_reply=None, campaign_name=None,
+                 cache_bar=None, cue_table=None, verbatim_bar=None):
         self.stable_core = stable_core
         self.rules = rules if rules is not None else (chunks or [])
         self.embedder = embedder
@@ -363,7 +456,54 @@ class Engine:
         self.valid_intents = valid_intents  # None -> manager.validate_turn's own default
         self.fallback_reply = fallback_reply if fallback_reply is not None else NO_RULE_REPLY
         self.campaign_name = campaign_name or "coverage"
+        # This campaign's measured cache serve bar (answer_cache.CacheBar).
+        # None means answer_cache.DEFAULT_BAR — threshold only, no margin, no
+        # tier agreement — which is what the coverage campaign has always used.
+        self.cache_bar = cache_bar
+        # Per-variant retrieval index, or None for the intent-hop path.
+        self.cue_table = cue_table
+        # The measured bar for speaking a verbatim rule directly (see
+        # verbatim_decision). None disables the path entirely, which is the
+        # default and what every campaign without an authored spoken-line KB
+        # should use.
+        self.verbatim_bar = verbatim_bar
+        # Rule metadata lives in the generated RULES list, not in the DB —
+        # `verbatim`, `slots` and `tags` have no columns. Indexed once here so
+        # the fast path is a dict lookup rather than a scan on every turn.
+        self._rules_by_id = {r.id: r for r in (self.rules or [])}
         self.router = IntentRouter(embedder, exemplars=exemplars)
+
+    def _verbatim_rule(self, retrieval):
+        """The authored rule to speak as-is this turn, or None.
+
+        Every condition is a reason the KB's own text is the right answer and
+        a generated one is not:
+
+          * the campaign measured a bar for this at all;
+          * retrieval is confident, and unambiguously so (threshold + margin
+            over the runner-up rule);
+          * the rule is marked `verbatim` at build time, so its text contains
+            no bracket, slot or case-record instruction and is speakable as
+            written;
+          * it is not terminal and not critical — ending a call and the
+            safety tiers keep the full pipeline, always.
+        """
+        bar = self.verbatim_bar
+        governing = retrieval.governing
+        if bar is None or governing is None or retrieval.cache_hit is not None:
+            return None
+        rule = self._rules_by_id.get(governing.chunk.id)
+        if rule is None or not getattr(rule, "verbatim", False):
+            return None
+        if governing.chunk.terminal or governing.chunk.priority == "critical":
+            return None
+        if governing.similarity < bar.threshold:
+            return None
+        if bar.margin > 0.0 and retrieval.reference:
+            runner_up = retrieval.reference[0].similarity
+            if (governing.similarity - runner_up) < bar.margin:
+                return None
+        return rule
 
     def _retrieve(self, state, message, history):
         with db_engine.connect() as conn:
@@ -372,6 +512,8 @@ class Engine:
                 history=history, router=self.router, table=self.table,
                 cache_table=self.cache_table,
                 precedence=self.manager.resolve_precedence,
+                cache_bar=self.cache_bar,
+                cue_table=self.cue_table,
             )
 
     def build_turn_context(self, state, history, user_message):
@@ -481,6 +623,16 @@ class Engine:
                 user_message, retrieval, (time.perf_counter() - start) * 1000
             )
             answer_cache.record_hit(retrieval.cache_hit["id"], table=self.cache_table)
+            return dbg["turn_json"]["reply"], dbg
+
+        # THE SECOND FAST PATH. The cache replays a model's earlier reply; this
+        # speaks the KB's own authored line. Same saving, stronger guarantee —
+        # see verbatim_decision.
+        verbatim = self._verbatim_rule(retrieval)
+        if verbatim is not None:
+            dbg = verbatim_decision(
+                user_message, retrieval, verbatim, (time.perf_counter() - start) * 1000
+            )
             return dbg["turn_json"]["reply"], dbg
 
         valid, raw = self._decide(
@@ -755,11 +907,24 @@ class Engine:
         # Only a turn whose reply does not depend on call state is ever cached
         # (answer_cache.is_cacheable), so applying state here is deliberately
         # minimal: nothing was extracted and the call cannot have ended.
-        if retrieval.cache_hit is not None:
-            final = cached_decision(
-                user_message, retrieval, (time.perf_counter() - start) * 1000
-            )
-            answer_cache.record_hit(retrieval.cache_hit["id"], table=self.cache_table)
+        verbatim = self._verbatim_rule(retrieval)
+        if retrieval.cache_hit is not None or verbatim is not None:
+            # Both fast paths land here: they differ only in which decision
+            # builder runs and whether a hit is recorded. Everything after —
+            # the state application below — is identical, because both produce
+            # a reply that by construction extracted nothing and cannot end the
+            # call, so duplicating the block would only invite the two copies
+            # to drift.
+            if retrieval.cache_hit is not None:
+                final = cached_decision(
+                    user_message, retrieval, (time.perf_counter() - start) * 1000
+                )
+                answer_cache.record_hit(retrieval.cache_hit["id"], table=self.cache_table)
+            else:
+                final = verbatim_decision(
+                    user_message, retrieval, verbatim,
+                    (time.perf_counter() - start) * 1000,
+                )
             reply_text = final["turn_json"]["reply"]
             state.intent = retrieval.intent or "none"
             state.opt_out = state.opt_out or retrieval.opt_out

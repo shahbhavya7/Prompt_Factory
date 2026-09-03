@@ -9,6 +9,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# .env.kb is sourced BEFORE the first compose call, not for DATABASE_URL (the
+# heredoc below loads that itself) but for SACE_KB_PORT: docker-compose.kb.yml
+# publishes "${SACE_KB_PORT:-5433}:5432", so without this the port override
+# silently reverts to 5433 and `up` fails with "port is already allocated" on
+# any machine where something else holds it.
+if [[ -f .env.kb ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env.kb
+  set +a
+fi
+
 COMPOSE=(docker compose -f docker-compose.kb.yml)
 
 echo "==> tearing down sace-kb-db (drops the volume: sace-kb-pgdata)"

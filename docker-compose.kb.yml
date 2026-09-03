@@ -34,7 +34,14 @@ services:
     ports:
       # 5433, deliberately not 5432 or 5434 — the shared stack (docker-compose.yml)
       # runs on 5434, so both can be up at the same time.
-      - "5433:5432"
+      #
+      # Overridable via SACE_KB_PORT because "free on the author's machine" is not
+      # a property of a port. Measured here: 5433 was already held by an unrelated
+      # project's container, and because the URL guard in sace_chat/db.py only
+      # parses the DATABASE_URL string, connecting to that stranger's Postgres on
+      # the "right" port passed the guard — it failed on password auth, by luck,
+      # not by design. Set SACE_KB_PORT in .env.kb (gitignored) when 5433 is taken.
+      - "${SACE_KB_PORT:-5433}:5432"
     volumes:
       - sace-kb-pgdata:/var/lib/postgresql/data
     healthcheck:

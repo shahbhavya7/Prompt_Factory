@@ -275,6 +275,100 @@ engine = create_engine(
 SessionLocal = sessionmaker(bind=engine, future=True)
 
 
+def verify_connected_database() -> str:
+    """Assert the SERVER we actually reached is this stack's own database.
+
+    The URL check at import time is necessary but not sufficient, and the gap
+    is not theoretical — it was hit while re-ingesting the KB.
+    docker-compose.kb.yml publishes the isolated stack on 5433; on that machine
+    5433 was already held by an unrelated project's Postgres. DATABASE_URL
+    still ended in "/sace_kb", so _EXPECTED_DB passed cleanly and every entry
+    point was willing to start, pointed at a stranger's server. It failed on
+    password authentication — luck, not a guard. A server that happened to have
+    a `sace` role and a `sace_kb` database would have accepted the whole load.
+
+    Note that `current_database()` cannot detect this on its own: Postgres
+    connects to the database named in the URL, so on any successful connection
+    it returns exactly the name the URL asked for, whichever host answered.
+    Comparing it to SACE_EXPECTED_DB re-checks the URL, not the server.
+
+    What distinguishes OUR database is a marker this stack writes itself. So:
+
+      * marker present and matching   -> the stack we expect. Proceed.
+      * marker present and different  -> another stack's database. Refuse.
+      * marker absent, no tables      -> a fresh database, mid-initialisation.
+                                         Proceed; init_db stamps it below.
+      * marker absent, our schema     -> a database created before this marker
+                                         existed. Adopt it and stamp it, rather
+                                         than locking everyone out of a
+                                         database that IS theirs.
+      * marker absent, foreign schema -> a populated database that is not ours.
+                                         Refuse. This is the port-collision
+                                         case, and the one worth catching.
+
+    "Our schema" is the presence of `chunks` — the rule pool every stack in
+    this repo has and nothing else plausibly does. It is a weaker signal than
+    the marker, which is why it only ever ADOPTS an unmarked database and never
+    overrides a marker that disagrees.
+
+    A no-op when SACE_EXPECTED_DB is unset, exactly like the URL check — the
+    shared sace_chat stack is unaffected.
+    """
+    if not _EXPECTED_DB:
+        with engine.connect() as conn:
+            return conn.execute(text("SELECT current_database()")).scalar()
+
+    with engine.connect() as conn:
+        actual = conn.execute(text("SELECT current_database()")).scalar()
+        marker = None
+        if conn.execute(text("SELECT to_regclass('public.sace_stack')")).scalar():
+            marker = conn.execute(text("SELECT name FROM sace_stack LIMIT 1")).scalar()
+        n_tables = conn.execute(text(
+            "SELECT count(*) FROM information_schema.tables "
+            "WHERE table_schema = 'public'"
+        )).scalar()
+        has_our_schema = bool(
+            conn.execute(text("SELECT to_regclass('public.chunks')")).scalar()
+        )
+
+    where = DATABASE_URL.rsplit("@", 1)[-1]
+    if marker is not None and marker != _EXPECTED_DB:
+        raise RuntimeError(
+            f"refusing to continue: the database at {where} is stamped as stack "
+            f"{marker!r}, but SACE_EXPECTED_DB requires {_EXPECTED_DB!r}."
+        )
+    if marker is None and n_tables and has_our_schema:
+        # Ours, from before the marker existed. Adopt it.
+        with engine.begin() as conn:
+            _stamp_stack(conn)
+        return actual
+    if marker is None and n_tables:
+        raise RuntimeError(
+            f"refusing to continue: the database at {where} already holds "
+            f"{n_tables} table(s) but carries no sace_stack marker, so it is not "
+            f"this stack's database. The URL names {actual!r} and resolves to a "
+            f"different server — most often another container already holding "
+            f"that port. Check `docker ps` and SACE_KB_PORT in .env.kb."
+        )
+    return actual
+
+
+def _stamp_stack(conn) -> None:
+    """Write this stack's identity marker. Idempotent; see
+    verify_connected_database for what reads it."""
+    if not _EXPECTED_DB:
+        return
+    conn.execute(text(
+        "CREATE TABLE IF NOT EXISTS sace_stack ("
+        "  name VARCHAR PRIMARY KEY,"
+        "  stamped_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+    ))
+    conn.execute(
+        text("INSERT INTO sace_stack (name) VALUES (:n) ON CONFLICT (name) DO NOTHING"),
+        {"n": _EXPECTED_DB},
+    )
+
+
 # Columns the stage-machine design needed and this one does not. Kept rather
 # than dropped so an existing database with learned rules in it survives the
 # migration; nothing reads them.
@@ -282,8 +376,16 @@ _DEAD_COLUMNS = ("stage", "is_minor", "retry_mode", "field", "transitions", "typ
 
 
 def init_db():
+    # Before any DDL: confirm the server on the other end of DATABASE_URL is
+    # the database we were told to write to. See verify_connected_database —
+    # the URL-string check at import time cannot catch a port collision.
+    verify_connected_database()
     with engine.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        # Stamped immediately after the extension and before any table is
+        # created, so the "tables but no marker" branch above can never fire
+        # against a database this function itself populated.
+        _stamp_stack(conn)
     Base.metadata.create_all(engine)
 
     # create_all only creates missing tables, never missing columns on an
@@ -433,6 +535,50 @@ def init_db():
         # Run separately from the LIKE above: that only fires on first CREATE,
         # so a database where answer_cache_renewal already existed needs these
         # added explicitly too.
+        # ── the per-variant cue index ────────────────────────────────────
+        #
+        # WHY THIS TABLE EXISTS, measured on the 165-rule renewal KB against
+        # 165 held-out paraphrases:
+        #
+        #   rule chosen via the intent hop (chunks_renewal)   46.1%
+        #   rule chosen directly from chunks_renewal          53.9%
+        #   rule chosen from THIS table                       97.0%
+        #
+        # The cause of the gap is one line in the loader. `chunks_renewal`
+        # stores ONE vector per rule, embedded from the cue variants JOINED
+        # into a single string — so "Nothing came in the mail" and "I didn't
+        # get anything" are averaged into a point that is not really either of
+        # them. Embedding each phrasing on its own row and taking the nearest
+        # recovers the signal that averaging destroyed. It is the same corpus
+        # and the same embedder; only the granularity changed.
+        #
+        # Rows are (rule, one phrasing). Many rows point at one rule; the rule
+        # itself still lives in chunks_renewal and is joined in at query time,
+        # so there is exactly one copy of the spoken text and no way for the
+        # two tables to disagree about what a rule says.
+        #
+        # Unlike answer_cache_renewal this holds EVERY tier including T2 and
+        # T4. That is safe and necessary: this index decides which rule GOVERNS
+        # a turn, not what gets replayed to a caller. A T4 self-harm question
+        # must still find its own rule — it just must never be served from a
+        # cache. The two concerns are separate tables precisely so one can be
+        # complete while the other is restricted.
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS chunks_renewal_cues ("
+            "  id VARCHAR PRIMARY KEY,"
+            "  rule_id VARCHAR NOT NULL,"
+            "  variant TEXT NOT NULL,"
+            "  kind VARCHAR NOT NULL DEFAULT 'cue',"   # cue | title
+            "  intent VARCHAR,"
+            "  tier VARCHAR,"
+            "  source VARCHAR NOT NULL DEFAULT 'seed',"
+            f"  embedding vector({EMBEDDING_DIM}) NOT NULL)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_chunks_renewal_cues_rule "
+            "ON chunks_renewal_cues (rule_id)"
+        ))
+
         for ddl in (
             "ALTER TABLE answer_cache_renewal ADD COLUMN IF NOT EXISTS "
             "correct_hits INTEGER NOT NULL DEFAULT 0",

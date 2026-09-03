@@ -15,9 +15,23 @@ generate_paraphrases_renewal.py), against the seeded answer_cache_renewal:
         are never in the cache at all, so any serve for a T2/T4 paraphrase
         is a cross-tier serve by construction) -> the dangerous band
 
-Then simulates the actual serve decision (LIMIT 2, tier-crossing guard,
-margin) over all 126 and reports hit rate / false-serve rate / cross-tier
-count against ground truth, at a few candidate margins.
+Then runs the REAL serve decision — answer_cache.lookup, the same function a
+live turn calls — over every paraphrase at each candidate margin, and reports
+hit rate / false-serve rate / cross-tier count against ground truth.
+
+That it calls lookup() rather than re-implementing it is the point. The
+earlier version simulated the decision in this file: an unfiltered
+`ORDER BY distance LIMIT 2` over the whole table, with its own threshold and
+margin arithmetic. Two things were wrong with that. It measured a different
+query from the one that actually serves (lookup scopes to the intent section
+and to the pending question, so its runner-up is a different row), and the bar
+it recommended was then never applied at all — nothing read cache_bar.json.
+Calling the real function closes both gaps at once: the number printed here is
+the number a call enforces, because it is produced by the same code.
+
+Also reports intent-routing accuracy over the same held-out set, since a
+served answer is only correct if the turn reached the right intent section
+first — the cache bar and the router are two halves of one number.
 
 Run:  python scripts/measure_cache_bar_renewal.py
 """
@@ -39,13 +53,23 @@ load_dotenv(ROOT / ".env")
 
 from sqlalchemy import text  # noqa: E402
 
+from sace_chat import answer_cache  # noqa: E402
+from sace_chat.answer_cache import CacheBar  # noqa: E402
+from sace_chat.campaign import RENEWAL_INTENT_EXEMPLARS  # noqa: E402
 from sace_chat.db import engine  # noqa: E402
 from sace_chat.embeddings import embed_many, get_embedder  # noqa: E402
+from sace_chat.kb_renewal import RULES as RENEWAL_RULES  # noqa: E402
+from sace_chat.retrieve import IntentRouter  # noqa: E402
 
 PARAPHRASES = ROOT / "data" / "renewal" / "eval" / "paraphrases.jsonl"
 MEASURED_OUT = ROOT / "data" / "renewal" / "eval" / "cache_bar.json"
 CACHEABLE_TIERS = ("T1", "T3")
 MARGIN_GRID = [0.0, 0.02, 0.05, 0.08, 0.10, 0.15]
+CACHE_TABLE = "answer_cache_renewal"
+CUE_TABLE = "chunks_renewal_cues"
+CHUNKS_TABLE = "chunks_renewal"
+VERBATIM_THRESHOLD_GRID = [0.55, 0.60, 0.65, 0.68, 0.70, 0.75]
+VERBATIM_MARGIN_GRID = [0.0, 0.05, 0.08, 0.12]
 
 
 def load_paraphrases():
@@ -74,6 +98,10 @@ def main():
     embedder = get_embedder()
     vecs = embed_many(embedder, [p["paraphrase"] for p in paraphrases])  # ONE batched call
     print(f"embedder: {type(embedder).__name__}  paraphrases: {len(paraphrases)}")
+
+    # Ground-truth tier per rule, so a serve can be judged cross-tier without
+    # a second query per paraphrase.
+    rule_tier = {r.id: r.tier for r in RENEWAL_RULES}
 
     own_sims, other_sims, other_tier_sims = [], [], []
     top1_top2 = []  # (rule_id, tier, top1_sim, top1_tier, top1_rule, top2_sim, top2_tier)
@@ -133,33 +161,59 @@ def main():
               "Treat CACHE_THRESHOLD_RENEWAL below as provisional; this corpus needs a second look.")
     print(f"CACHE_THRESHOLD_RENEWAL (measured) = {threshold:.4f}")
 
-    print("\n[decision simulation — threshold + LIMIT-2 tier-crossing guard + margin]")
+    # ── intent routing, over the same held-out set ─────────────────────────
+    # A cache serve is scoped to one intent section, so a routing error and a
+    # cache miss are different failures with the same symptom. Measured here so
+    # the two are never read as one number.
+    router = IntentRouter(embedder, exemplars=RENEWAL_INTENT_EXEMPLARS)
+    router.warm()
+    routed_ok = routed_none = 0
+    for p, vec in zip(paraphrases, vecs):
+        predicted, _sim, _ranked = router.detect(p["paraphrase"], kb_message_vec=vec)
+        if predicted == p["intent"]:
+            routed_ok += 1
+        elif predicted is None:
+            routed_none += 1
+    n = len(paraphrases)
+    print(f"\n[intent routing] correct {routed_ok}/{n} ({100 * routed_ok / n:.1f}%)  "
+          f"unrouted {routed_none}  wrong {n - routed_ok - routed_none}")
+
+    print("\n[serve decision — the real answer_cache.lookup, per margin]")
     print(f"{'margin':>7} {'hits':>6} {'false':>6} {'cross':>6} {'miss':>6} "
           f"{'hit%':>7} {'false%':>7}")
     best_margin = None
     grid_results = []
-    for margin in MARGIN_GRID:
-        hits = false_serve = cross_tier = miss = 0
-        for rule_id, tier, s1, t1_tier, t1_rule, s2, t2_tier in top1_top2:
-            served = s1 >= threshold and t1_tier == t2_tier and (s1 - s2) >= margin
-            if not served:
-                miss += 1
-                continue
-            if t1_rule == rule_id:
-                hits += 1
-            elif t1_tier == tier:
-                false_serve += 1
-            else:
-                cross_tier += 1
-        n = len(top1_top2)
-        hit_pct, false_pct = 100 * hits / n, 100 * false_serve / n
-        grid_results.append({"margin": margin, "hits": hits, "false_serve": false_serve,
-                              "cross_tier": cross_tier, "miss": miss,
-                              "hit_pct": hit_pct, "false_pct": false_pct})
-        print(f"{margin:>7.2f} {hits:>6} {false_serve:>6} {cross_tier:>6} {miss:>6} "
-              f"{hit_pct:>6.1f}% {false_pct:>6.2f}%")
-        if cross_tier == 0 and false_pct < 1.0 and best_margin is None:
-            best_margin = margin
+    with engine.connect() as conn:
+        for margin in MARGIN_GRID:
+            bar = CacheBar(threshold=threshold, margin=margin,
+                           require_tier_agreement=True)
+            hits = false_serve = cross_tier = miss = 0
+            for p, vec in zip(paraphrases, vecs):
+                # The TRUE intent, not the router's guess: this grid is
+                # measuring the cache bar, and feeding it routing errors would
+                # blame the bar for the router's misses. Routing is reported
+                # separately above.
+                hit = answer_cache.lookup(conn, vec, p["intent"], pending="",
+                                          table=CACHE_TABLE, bar=bar)
+                if hit is None:
+                    miss += 1
+                    continue
+                if hit["governing_rule_id"] == p["id"]:
+                    hits += 1
+                    continue
+                served_tier = rule_tier.get(hit["governing_rule_id"])
+                if served_tier == p["tier"]:
+                    false_serve += 1
+                else:
+                    cross_tier += 1
+            hit_pct, false_pct = 100 * hits / n, 100 * false_serve / n
+            grid_results.append({"margin": margin, "hits": hits, "false_serve": false_serve,
+                                  "cross_tier": cross_tier, "miss": miss,
+                                  "hit_pct": hit_pct, "false_pct": false_pct})
+            print(f"{margin:>7.2f} {hits:>6} {false_serve:>6} {cross_tier:>6} {miss:>6} "
+                  f"{hit_pct:>6.1f}% {false_pct:>6.2f}%")
+            if cross_tier == 0 and false_pct < 1.0 and best_margin is None:
+                best_margin = margin
 
     print()
     if best_margin is not None:
@@ -171,6 +225,66 @@ def main():
               "distribution above; the corpus likely needs more/better seeded variants for the "
               "colliding rule(s) before this is safe to serve at all.")
 
+    # ── the verbatim fast path ─────────────────────────────────────────────
+    # A separate decision from the cache, measured separately: given the cue
+    # index picked a rule and that rule is marked verbatim, is retrieval
+    # accurate enough at this bar to speak the rule as written with no model in
+    # the loop? Judged on RULE accuracy and, more importantly, TIER accuracy —
+    # answering a T3 hand-off question with a confident T1 line is the failure
+    # that matters, and it is the one a threshold alone does not prevent.
+    from sace_chat.retrieve import _fetch_by_cue  # noqa: PLC0415
+
+    by_id = {r.id: r for r in RENEWAL_RULES}
+    cue_rows = []
+    with engine.connect() as conn:
+        for p, vec in zip(paraphrases, vecs):
+            cand = _fetch_by_cue(conn, vec, CUE_TABLE, CHUNKS_TABLE, k=2)
+            if not cand:
+                continue
+            top = cand[0]
+            sim = 1 - top.tags["distance"]
+            second = 1 - cand[1].tags["distance"] if len(cand) > 1 else 0.0
+            cue_rows.append((sim, sim - second, by_id[top.id].verbatim,
+                              top.id == p["id"], by_id[top.id].tier == p["tier"]))
+
+    cue_top1 = sum(1 for r in cue_rows if r[3])
+    print(f"\n[cue index] rule top-1 correct {cue_top1}/{len(cue_rows)} "
+          f"({100 * cue_top1 / len(cue_rows):.1f}%)")
+
+    print("\n[verbatim fast path — coverage vs accuracy]")
+    print(f"{'thresh':>7} {'margin':>7} {'served':>7} {'rule%':>7} {'tier%':>7}")
+    verbatim_bar = None
+    for thresh in VERBATIM_THRESHOLD_GRID:
+        for margin in VERBATIM_MARGIN_GRID:
+            sel = [r for r in cue_rows if r[2] and r[0] >= thresh and r[1] >= margin]
+            if not sel:
+                continue
+            rule_ok = sum(1 for r in sel if r[3])
+            tier_ok = sum(1 for r in sel if r[4])
+            rule_pct = 100 * rule_ok / len(sel)
+            tier_pct = 100 * tier_ok / len(sel)
+            print(f"{thresh:>7.2f} {margin:>7.2f} {len(sel):>7} "
+                  f"{rule_pct:>6.1f}% {tier_pct:>6.1f}%")
+            # The most coverage at PERFECT measured tier and rule accuracy.
+            # Anything less than perfect keeps the model in the loop: this path
+            # has no grounding check and no never-say guard behind it, because
+            # it generates nothing — so the bar for turning it on is that it
+            # was not observed to be wrong at all.
+            if rule_pct == 100.0 and tier_pct == 100.0:
+                if verbatim_bar is None or len(sel) > verbatim_bar["served"]:
+                    verbatim_bar = {"threshold": thresh, "margin": margin,
+                                     "served": len(sel), "n": len(cue_rows)}
+    print()
+    if verbatim_bar:
+        print(f"VERBATIM BAR (measured) = threshold {verbatim_bar['threshold']:.2f}, "
+              f"margin {verbatim_bar['margin']:.2f} — serves "
+              f"{verbatim_bar['served']}/{verbatim_bar['n']} "
+              f"({100 * verbatim_bar['served'] / verbatim_bar['n']:.1f}%) of turns with "
+              f"no model call, at 100% measured rule AND tier accuracy.")
+    else:
+        print("!! no threshold/margin in the grid reaches 100% rule and tier accuracy — "
+              "the verbatim fast path stays OFF and every turn keeps the full pipeline.")
+
     MEASURED_OUT.write_text(json.dumps({
         "n_paraphrases": len(paraphrases),
         "bands": {
@@ -181,6 +295,12 @@ def main():
         },
         "cache_threshold_renewal": round(threshold, 4),
         "cache_margin": best_margin,
+        "require_tier_agreement": True,
+        "cue_index": {"n": len(cue_rows), "rule_top1": cue_top1},
+        "verbatim_bar": verbatim_bar,
+        "intent_routing": {"n": len(paraphrases), "correct": routed_ok,
+                            "unrouted": routed_none,
+                            "wrong": len(paraphrases) - routed_ok - routed_none},
         "grid": grid_results,
     }, indent=2), encoding="utf-8")
     print(f"\nwrote {MEASURED_OUT.relative_to(ROOT)}")

@@ -19,11 +19,13 @@ import shutil
 import signal
 import subprocess
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+
 from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
@@ -238,6 +240,89 @@ def voice_status():
                       else _VOICE_PROC.returncode),
         "log": str(_VOICE_LOG),
     }
+
+
+@app.post("/voice/join")
+async def voice_join(room: str | None = None):
+    """Mint a LiveKit token so a BROWSER can join the call with its own mic.
+
+    This is the "call Maya from my phone" path, and it exists because the
+    dashboard on its own cannot carry audio. The dashboard is a spectator: it
+    watches voice_agent.py's broadcast and can ask it to start a call, but the
+    caller's voice has to reach the agent through a LiveKit room, and only a
+    real participant can publish it. `./run.sh voice` binds the SERVER's
+    microphone, which is the wrong one the moment the browser is on a different
+    device — a phone.
+
+    So the browser becomes the caller. It joins the room with getUserMedia and
+    publishes its mic; the agent joins the same room; the desktop dashboard
+    keeps watching the same session over the spectator websocket, exactly as it
+    does now. Audio goes phone -> LiveKit Cloud -> agent and never touches the
+    tunnel, which is why ngrok is only needed for the dashboard itself.
+
+    THE DISPATCH IS NOT OPTIONAL. voice_agent.py registers its worker with
+    `agent_name=` set (WorkerOptions), and in livekit-agents that selects
+    EXPLICIT dispatch: the worker is not offered jobs for rooms it was not sent
+    to, so a browser joining an empty room would sit there alone with nobody to
+    talk to. Creating the dispatch here is what puts Maya in the room.
+
+    Returns the server URL, the room, and a token scoped to that one room.
+    """
+    url = os.environ.get("LIVEKIT_URL")
+    key = os.environ.get("LIVEKIT_API_KEY")
+    secret = os.environ.get("LIVEKIT_API_SECRET")
+    missing = [n for n, v in (("LIVEKIT_URL", url), ("LIVEKIT_API_KEY", key),
+                               ("LIVEKIT_API_SECRET", secret)) if not v]
+    if missing:
+        raise HTTPException(
+            status_code=503,
+            detail=f"LiveKit is not configured — {', '.join(missing)} unset in .env",
+        )
+
+    try:
+        from livekit import api as lkapi
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"livekit-api is not installed in this interpreter ({exc}) — "
+                   f"pip install -r requirements.txt",
+        ) from exc
+
+    agent_name = os.environ.get("LIVEKIT_AGENT_NAME", "sace-calling-agent")
+    room = room or f"renewal-{uuid.uuid4().hex[:8]}"
+    identity = f"caller-{uuid.uuid4().hex[:6]}"
+
+    # Explicit dispatch first, THEN the token. If the dispatch fails the caller
+    # should hear about it here rather than join a room and wait in silence for
+    # an agent that was never sent.
+    async with lkapi.LiveKitAPI(url=url, api_key=key, api_secret=secret) as client:
+        try:
+            await client.agent_dispatch.create_dispatch(
+                lkapi.CreateAgentDispatchRequest(agent_name=agent_name, room=room)
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"could not dispatch agent {agent_name!r} to room {room!r}: "
+                       f"{type(exc).__name__}: {exc}. Is the worker running "
+                       f"(python voice_agent.py dev)?",
+            ) from exc
+
+    token = (
+        lkapi.AccessToken(key, secret)
+        .with_identity(identity)
+        .with_name("Caller")
+        # Scoped to this one room, and to publishing audio only: the browser is
+        # a caller, not an operator. It has no reason to be able to open other
+        # rooms or publish video.
+        .with_grants(lkapi.VideoGrants(
+            room_join=True, room=room,
+            can_publish=True, can_subscribe=True, can_publish_data=False,
+        ))
+        .to_jwt()
+    )
+    return {"url": url, "room": room, "identity": identity,
+            "token": token, "agent_name": agent_name}
 
 
 @app.post("/voice/start")

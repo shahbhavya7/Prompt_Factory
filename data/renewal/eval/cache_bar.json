@@ -1,77 +1,94 @@
 {
-  "n_paraphrases": 126,
+  "n_paraphrases": 165,
   "bands": {
     "true_positive": {
-      "n": 113,
-      "min": 0.5516823067380431,
-      "max": 0.941741143163767
+      "n": 145,
+      "min": 0.5213237900533405,
+      "max": 0.9630329706037254
     },
     "false_positive": {
-      "n": 126,
-      "min": 0.31119716105991135,
-      "max": 0.8118853410368089
+      "n": 165,
+      "min": 0.26466983802346866,
+      "max": 0.8118707800218959
     },
     "dangerous_other_tier": {
-      "n": 113,
-      "min": 0.2396364343497095,
-      "max": 0.7191233516170655
+      "n": 145,
+      "min": 0.26466983802346866,
+      "max": 0.753086211647795
     }
   },
-  "cache_threshold_renewal": 0.6753,
-  "cache_margin": 0.02,
+  "cache_threshold_renewal": 0.6888,
+  "cache_margin": 0.0,
+  "require_tier_agreement": true,
+  "cue_index": {
+    "n": 165,
+    "rule_top1": 160
+  },
+  "verbatim_bar": {
+    "threshold": 0.7,
+    "margin": 0.0,
+    "served": 119,
+    "n": 165
+  },
+  "intent_routing": {
+    "n": 165,
+    "correct": 89,
+    "unrouted": 12,
+    "wrong": 64
+  },
   "grid": [
     {
       "margin": 0.0,
-      "hits": 87,
-      "false_serve": 1,
-      "cross_tier": 1,
-      "miss": 37,
-      "hit_pct": 69.04761904761905,
-      "false_pct": 0.7936507936507936
+      "hits": 114,
+      "false_serve": 0,
+      "cross_tier": 0,
+      "miss": 51,
+      "hit_pct": 69.0909090909091,
+      "false_pct": 0.0
     },
     {
       "margin": 0.02,
-      "hits": 83,
+      "hits": 114,
       "false_serve": 0,
       "cross_tier": 0,
-      "miss": 43,
-      "hit_pct": 65.87301587301587,
+      "miss": 51,
+      "hit_pct": 69.0909090909091,
       "false_pct": 0.0
     },
     {
       "margin": 0.05,
-      "hits": 79,
+      "hits": 114,
       "false_serve": 0,
       "cross_tier": 0,
-      "miss": 47,
-      "hit_pct": 62.698412698412696,
+      "miss": 51,
+      "hit_pct": 69.0909090909091,
       "false_pct": 0.0
     },
     {
       "margin": 0.08,
-      "hits": 70,
+      "hits": 114,
       "false_serve": 0,
       "cross_tier": 0,
-      "miss": 56,
-      "hit_pct": 55.55555555555556,
+      "miss": 51,
+      "hit_pct": 69.0909090909091,
       "false_pct": 0.0
     },
     {
       "margin": 0.1,
-      "hits": 66,
+      "hits": 114,
       "false_serve": 0,
       "cross_tier": 0,
-      "miss": 60,
-      "hit_pct": 52.38095238095238,
+      "miss": 51,
+      "hit_pct": 69.0909090909091,
       "false_pct": 0.0
     },
     {
       "margin": 0.15,
-      "hits": 59,
+      "hits": 109,
       "false_serve": 0,
       "cross_tier": 0,
-      "miss": 67,
-      "hit_pct": 46.82539682539682,
+      "miss": 56,
+      "hit_pct": 66.06060606060606,
       "false_pct": 0.0
     }
   ]
